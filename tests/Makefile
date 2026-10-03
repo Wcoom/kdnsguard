@@ -17,12 +17,14 @@ CFLAGS  := -std=gnu11 -O1 -g -Wall -Wextra -Werror \
 
 WIRE    := $(BUILD)/test_wire
 HTTP    := $(BUILD)/test_http
-WIRE_SRC := test_wire.c ../kernel/kdg_wire.c
-HTTP_SRC := test_http.c ../kernel/kdg_http.c
+CACHE   := $(BUILD)/test_cache
+WIRE_SRC  := test_wire.c  ../kernel/kdg_wire.c
+HTTP_SRC  := test_http.c  ../kernel/kdg_http.c
+CACHE_SRC := test_cache.c ../kernel/kdg_cache.c ../kernel/kdg_wire.c
 
 .PHONY: all run clean
 
-all: $(WIRE) $(HTTP)
+all: $(WIRE) $(HTTP) $(CACHE)
 
 $(WIRE): $(WIRE_SRC) ../kernel/kdg_wire.h ../include/kdg_base.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(WIRE_SRC)
@@ -30,12 +32,16 @@ $(WIRE): $(WIRE_SRC) ../kernel/kdg_wire.h ../include/kdg_base.h | $(BUILD)
 $(HTTP): $(HTTP_SRC) ../kernel/kdg_http.h ../include/kdg_base.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(HTTP_SRC)
 
+$(CACHE): $(CACHE_SRC) ../kernel/kdg_cache.h ../kernel/kdg_wire.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $(CACHE_SRC)
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
 run: all
 	@./$(WIRE)
 	@./$(HTTP)
+	@./$(CACHE)
 
 clean:
 	rm -rf $(BUILD)

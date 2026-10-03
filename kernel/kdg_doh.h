@@ -15,6 +15,10 @@
 #include "kdg_base.h"
 #include "kdg_tls.h"
 
+/* 请求/响应缓冲上限。编排层（kdg_resolve.c）也要用，故上移到头文件。 */
+#define KDG_DOH_REQ_MAX	(KDG_MAX_WIRE_MSG + 512)
+#define KDG_DOH_RX_MAX	(8192 + KDG_MAX_WIRE_MSG)
+
 /* 上游端点描述。字符串均为 NUL 结尾。 */
 struct kdg_doh_cfg {
 	char	hostname[256];	/* SNI 与证书主机名校验 */

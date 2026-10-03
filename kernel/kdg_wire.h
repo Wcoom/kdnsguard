@@ -200,6 +200,20 @@ int kdg_wire_dname_to_text(const struct kdg_dname *n, char *buf, size_t buflen);
 int kdg_wire_get_answer_rr(const u8 *msg, size_t len, unsigned int idx,
 			   struct kdg_rr_ref *out);
 
+/*
+ * 收集响应中所有 **非 OPT** RR 的 TTL 字段在报文里的字节偏移。
+ *
+ * 为什么排除 OPT：OPT 伪记录的 TTL 字段承载 ext-rcode/version/flags，
+ * **不是生存时间**。缓存回包时若把它一起递减，会破坏 EDNS 语义
+ * （方案 §8 明确点名这一点）。这里从源头排除，调用方无需再判。
+ *
+ * 返回写入的偏移个数（>=0），或负的 KDG_W_E*；
+ * 当非 OPT RR 数超过 offs_cap 时返回 KDG_W_ECOUNT —— 调用方应据此
+ * **放弃缓存该响应**，而不是少改几个 TTL（那会让超期数据看起来更新鲜）。
+ */
+int kdg_wire_collect_ttl_offs(const u8 *msg, size_t len,
+			      u16 *offs, u16 offs_cap);
+
 /* 该响应是否可缓存，以及可缓存多久（秒）。0 表示不可缓存。
  * 覆盖 §8 的全部规则：TTL=0、SERVFAIL、截断、超大、非 NOERROR/NXDOMAIN。 */
 u32 kdg_wire_cacheable_ttl(const struct kdg_summary *s, bool allow_negative);

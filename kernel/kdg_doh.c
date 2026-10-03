@@ -15,11 +15,9 @@
 #include "kdg_doh.h"
 #include "kdg_http.h"
 
-/* 请求缓冲：HTTP 头 + DNS 正文。头很短（< 512），正文上限同 UAPI。 */
-#define KDG_DOH_REQ_MAX	(KDG_MAX_WIRE_MSG + 512)
-/* 接收缓冲：响应头 + DNS 正文。方案 §7.4 要求这类大缓冲走有界堆分配、
- * 不放在 kernel stack —— 两者相加有 12 KiB，栈上放不下（内核栈 16 KiB）。 */
-#define KDG_DOH_RX_MAX	(KDG_HTTP_MAX_HEAD + KDG_MAX_WIRE_MSG)
+/* KDG_DOH_REQ_MAX / KDG_DOH_RX_MAX 见 kdg_doh.h —— 编排层也在用。
+ * 接收缓冲之所以要这么大：方案 §7.4 要求这类大缓冲走有界堆分配、
+ * 不放在 kernel stack（两者相加 12 KiB，16 KiB 的栈放不下）。 */
 
 static struct kdg_doh_stats g_stats;
 

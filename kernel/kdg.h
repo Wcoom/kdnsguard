@@ -95,6 +95,10 @@ void kdg_tls_global_exit(void);
 /* kdg_psa_probe.c —— PSA 直探针（排障用，定位后可整体删除） */
 void kdg_psa_probe(void);
 
+/* kdg_cache_tab.c —— DNS 缓存存储层 */
+int kdg_cache_tab_init(void);
+void kdg_cache_tab_exit(void);
+
 /* kdg_chardev.c —— 查询面 /dev/kdnsguard */
 int kdg_chardev_init(void);
 void kdg_chardev_exit(void);

@@ -615,6 +615,52 @@ u32 kdg_wire_cacheable_ttl(const struct kdg_summary *s, bool allow_negative)
 	return ttl;
 }
 
+/* ── TTL 字段偏移收集（缓存用） ───────────────────────────────────────── */
+
+/*
+ * RR 的固定字段布局：type(2) class(2) ttl(4) rdlen(2)，紧跟在名字之后。
+ * kdg_scan_rr 回填的 rdata_off 正是「rdlen 之后」，故：
+ *     ttl_off = rdata_off - 10 + 4 = rdata_off - 6
+ */
+int kdg_wire_collect_ttl_offs(const u8 *msg, size_t len,
+			      u16 *offs, u16 offs_cap)
+{
+	struct kdg_summary s;
+	struct kdg_rr_ref rr;
+	size_t off;
+	u16 n = 0;
+	u16 i;
+	int ret;
+
+	if (!msg || !offs)
+		return KDG_W_EARG;
+
+	/* 先整体校验一遍，避免在未校验的报文上做定位 —— 与
+	 * kdg_wire_get_answer_rr 同样的理由：宁可多走一次 walker，
+	 * 也不让「定位用一套边界、解析用另一套边界」。 */
+	ret = kdg_wire_parse_response(msg, len, &s);
+	if (ret < 0)
+		return ret;
+
+	off = KDG_DNS_HDR_LEN + s.question_bytes;
+
+	/* answer + authority + additional 三段都要收集：TTL 分散在三处。 */
+	for (i = 0; i < (u16)(s.ancount + s.nscount + s.arcount); i++) {
+		ret = kdg_scan_rr(msg, len, &off, &rr, NULL);
+		if (ret < 0)
+			return ret;
+		if (rr.type == KDG_RRTYPE_OPT)
+			continue;	/* OPT 的 TTL 不是 TTL */
+		if (rr.rdata_off < 6)
+			return KDG_W_EFORMAT;
+		if (n >= offs_cap)
+			return KDG_W_ECOUNT;
+		offs[n++] = (u16)(rr.rdata_off - 6);
+	}
+
+	return (int)n;
+}
+
 /* ── 单条 answer RR 定位（域名映射用） ────────────────────────────────── */
 
 int kdg_wire_get_answer_rr(const u8 *msg, size_t len, unsigned int idx,

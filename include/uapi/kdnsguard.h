@@ -110,6 +110,15 @@ enum kdg_health_attr {
 	KDG_HA_DOH_OK,			/* u64：成功数 */
 	KDG_HA_DOH_LAST_STATUS,		/* u32：最近一次 HTTP 状态码 */
 	KDG_HA_DOH_LAST_RTT_MS,		/* u32：最近一次往返毫秒 */
+	/* 缓存与编排统计（P2）。 */
+	KDG_HA_CACHE_HITS,		/* u64 */
+	KDG_HA_CACHE_MISSES,		/* u64 */
+	KDG_HA_CACHE_STALE,		/* u64：命中但已过期而摘除 */
+	KDG_HA_CACHE_EVICTIONS,		/* u64 */
+	KDG_HA_CACHE_ENTRIES,		/* u32：当前有效条目 */
+	KDG_HA_CACHE_MEM_BYTES,		/* u32：当前核算占用 */
+	KDG_HA_RESOLVE_CACHE,		/* u64：由缓存满足的解析次数 */
+	KDG_HA_RESOLVE_UPSTREAM,	/* u64：真正走上游的次数 */
 	__KDG_HA_MAX,
 };
 #define KDG_HA_MAX (__KDG_HA_MAX - 1)

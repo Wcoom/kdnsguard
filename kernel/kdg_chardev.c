@@ -35,6 +35,7 @@
 
 #include "kdg.h"
 #include "kdg_doh.h"
+#include "kdg_resolve.h"
 
 struct kdg_file_ctx {
 	struct mutex		lock;		/* 串行化同一 fd 上的 write/read */
@@ -71,7 +72,20 @@ static int kdg_do_query(struct kdg_file_ctx *ctx, const struct kdg_req_v1 *req,
 	if (req->deadline_ms)
 		ctx->cfg.deadline_ms = req->deadline_ms;
 
-	ret = kdg_doh_query(&ctx->cfg, qwire, qlen, rwire, &rlen);
+	{
+		struct kdg_resolve_req rq = {
+			.cfg = &ctx->cfg,
+			/* P2 阶段还没有网络上下文输入面（方案 §5.3 的
+			 * netId/fwmark 属 P3），故 net_id 恒为 0。
+			 * profile_gen 取当前配置代际：换上游会递增它，
+			 * 从而让旧代际的缓存自动失效。 */
+			.net_id = 0,
+			.profile_gen = READ_ONCE(kdg_cfg.generation),
+		};
+		enum kdg_source src;
+
+		ret = kdg_resolve(&rq, qwire, qlen, rwire, &rlen, &src);
+	}
 
 	/* 响应头 + 正文一次分配：读路径只需一次 copy_to_user，
 	 * 也避免两个缓冲各自的生命周期管理。 */

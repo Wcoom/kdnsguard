@@ -91,6 +91,23 @@ if [ -n "$UNEXPECTED" ]; then
 	exit 1
 fi
 
+# ── 剥掉调试信息 ────────────────────────────────────────────────────────
+# mbedTLS 的调试节让 .ko 从 ~1.4 MB 膨胀到 ~5.8 MB。这不只是浪费：
+# 实测 5.85 MB 的模块在真机上 insmod 直接报 "Out of memory"（模块加载走
+# module_alloc → vmalloc，大块分配在内存碎片化的手机上会失败），
+# 而同一个模块剥掉 .debug_* 后 1.46 MB，加载正常。
+# 用 llvm-strip --strip-debug 而不是 --strip-all：后者会连 .BTF 一起动，
+# 而 BTF 是内核侧诊断（bpftrace 等）要用的。
+LLVM_STRIP="$KERNEL_ROOT/../clang-19/bin/llvm-strip"
+if [ -x "$LLVM_STRIP" ]; then
+	BEFORE=$(stat -c %s "$KO_DIR"/kdnsguard.ko)
+	"$LLVM_STRIP" --strip-debug "$KO_DIR"/kdnsguard.ko
+	AFTER=$(stat -c %s "$KO_DIR"/kdnsguard.ko)
+	echo "已剥离调试信息：$((BEFORE/1024)) KiB -> $((AFTER/1024)) KiB"
+else
+	echo "（未找到 llvm-strip，模块将保持带调试信息的大小）"
+fi
+
 echo "========================================"
 ls -la "$KO_DIR"/kdnsguard.ko
 echo "--- vermagic（必须与设备 uname -r 一致）---"
