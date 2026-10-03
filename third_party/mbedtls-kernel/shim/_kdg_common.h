@@ -19,7 +19,7 @@
  * 本文件只被 mbedTLS 的翻译单元与 kdg_mbedtls.c 经过，不影响内核其它代码。
  */
 /*
- * ⚠️ **本文件的清理只在 KDG_MBEDTLS_TU 被定义时生效**。
+ * ⚠️ **本文件的清理只在 KDG_SHIM_TU 被定义时生效**。
  *
  * 那些 shim 头是放在全局 -I 上的（因为 mbedTLS 用 <string.h> 这类
  * libc 风格的名字去 include）。但内核头也可能 include 同名文件，于是
@@ -28,9 +28,9 @@
  * "use of undeclared identifier 'current'"。
  *
  * 靠调整 include 顺序只是碰运气；正确做法是给清理加作用域。
- * KDG_MBEDTLS_TU 由 kernel/Makefile 用逐对象旗标只打给 mbedtls/*.o。
+ * KDG_SHIM_TU 由 kernel/Makefile 用逐对象旗标只打给 mbedtls/*.o。
  */
-#if defined(KDG_MBEDTLS_TU)
+#if defined(KDG_SHIM_TU)
 
 /*
  * ⚠️ **本文件刻意没有 include guard**。
@@ -51,9 +51,27 @@
 #include <linux/string.h>
 #include <linux/stddef.h>
 
-/* ── 1. 访问器宏：与普通标识符冲突 ───────────────────────────────── */
+/* ── 1. 函数式宏：与普通标识符/成员访问冲突 ─────────────────────────
+ *
+ * 这一类最阴险：宏不区分「独立标识符」与「成员名」，所以
+ *     mem->free(ptr, ud)        被 #define free(p) 改写 → 参数个数不符
+ *     swap(pq, i, j)            被 #define swap(a,b) 改写 → 参数个数不符
+ * 报错信息是 "too many arguments provided to function-like macro
+ * invocation"，而位置落在第三方库里，看不出是内核宏造成的。
+ */
 #undef current			/* : get_current() */
-#undef smp_processor_id		/* 保留语义由调用方自行使用内核 API，mbedTLS 不需要 */
+#undef smp_processor_id		/* 保留语义由调用方自行使用内核 API */
+
+/*
+ * swap：nghttp2_pq.c 有 `static void swap(nghttp2_pq *pq, size_t i, size_t j)`，
+ * 会被内核的 `#define swap(a, b)` 改写成两参数形式。
+ *
+ * ⚠️ 只 undef 这一个。min/max/abs/clamp **不能**动 —— 内核自己的头
+ * （jiffies.h 用 max、math64.h 用 abs）在 include 链上就要用它们，
+ * 抹掉会立刻把内核头编坏（实测如此）。这也说明这类清理必须**逐个甄别**，
+ * 不能按「看起来都像宏」一锅端。
+ */
+#undef swap
 
 /* ── 2. 极值宏：内核用 C 表达式定义，无法用于 #if ─────────────────── */
 #undef SIZE_MAX
@@ -100,4 +118,52 @@
  * 定义、因而无法出现在 #if 里的那几个；其余保留内核的即可。
  */
 
-#endif /* KDG_MBEDTLS_TU */
+/*
+ * 定宽整数的极值宏。
+ *
+ * 放在这个**共享**清理头里而不是 shim/stdint.h：第三方库未必直接 include
+ * <stdint.h>（nghttp2_hd.c 就没有），但几乎一定会经过我们的某个 shim。
+ * 放在这里能保证「只要经过了任一 shim 就能拿到」，而不必逐个文件补 include。
+ * 取值同样是**字面常量**（见上面 UINT_MAX 的惨痛教训）。
+ */
+#ifndef INT8_MAX
+#define INT8_MAX	127
+#endif
+#ifndef INT8_MIN
+#define INT8_MIN	(-128)
+#endif
+#ifndef UINT8_MAX
+#define UINT8_MAX	255U
+#endif
+#ifndef INT16_MAX
+#define INT16_MAX	32767
+#endif
+#ifndef INT16_MIN
+#define INT16_MIN	(-32768)
+#endif
+#ifndef UINT16_MAX
+#define UINT16_MAX	65535U
+#endif
+#ifndef INT32_MAX
+#define INT32_MAX	2147483647
+#endif
+#ifndef INT32_MIN
+#define INT32_MIN	(-INT32_MAX - 1)
+#endif
+#ifndef UINT32_MAX
+#define UINT32_MAX	4294967295U
+#endif
+#ifndef INT64_MIN
+#define INT64_MIN	(-INT64_MAX - 1LL)
+#endif
+#ifndef UINT64_MAX
+#define UINT64_MAX	18446744073709551615ULL
+#endif
+#ifndef INT64_MAX
+#define INT64_MAX	9223372036854775807LL
+#endif
+#ifndef SIZE_MAX
+#define SIZE_MAX	(~0UL)
+#endif
+
+#endif /* KDG_SHIM_TU */

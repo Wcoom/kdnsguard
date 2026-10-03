@@ -33,4 +33,12 @@ int kdg_mbedtls_vsnprintf(char *s, size_t n, const char *fmt, va_list ap);
 int kdg_mbedtls_printf(const char *fmt, ...);
 int kdg_mbedtls_fprintf(FILE *stream, const char *fmt, ...);
 
+/*
+ * fprintf/stderr：nghttp2 的调试输出走 stderr。内核态没有流对象，
+ * 把 stderr 定义成一个空指针常量、fprintf 定义为打印到 printk ——
+ * 调用点写法不用改，且永不接触真实的 FILE。
+ */
+#define stderr ((FILE *)0)
+#define fprintf(stream, ...) kdg_mbedtls_fprintf((stream), __VA_ARGS__)
+
 #endif /* _KDG_SHIM_STDIO_H */

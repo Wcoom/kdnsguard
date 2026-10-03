@@ -55,6 +55,21 @@ void kdg_mbedtls_free(void *ptr)
 	kfree(ptr);
 }
 
+/*
+ * malloc/realloc：nghttp2 的 nghttp2_mem_default() 需要它们，我们用自己的
+ * 分配器替掉它的 libc 默认实现（见 shim/stdlib.h 的说明 —— 那里刻意用
+ * static inline 函数而不是宏）。
+ */
+void *kdg_mbedtls_malloc(size_t n)
+{
+	return kmalloc(n, GFP_KERNEL);
+}
+
+void *kdg_mbedtls_realloc(void *ptr, size_t n)
+{
+	return krealloc(ptr, n, GFP_KERNEL);
+}
+
 /* ── 2. 格式化 ────────────────────────────────────────────────────────── */
 
 int kdg_mbedtls_vsnprintf(char *s, size_t n, const char *fmt, va_list ap)

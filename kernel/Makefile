@@ -39,13 +39,21 @@ KDG_MBEDTLS_OBJS := $(patsubst $(src)/mbedtls/%.c,mbedtls/%.o,\
 			$(wildcard $(src)/mbedtls/*.c))
 kdnsguard-y += $(KDG_MBEDTLS_OBJS)
 
-# 只给 mbedTLS 的翻译单元打上 KDG_MBEDTLS_TU。
+# 只给 mbedTLS 的翻译单元打上 KDG_SHIM_TU。
 # 上面那些 shim 头在全局 -I 上（mbedTLS 用 <string.h> 这类 libc 风格名字
 # include），但内核头也可能 include 同名文件 —— 若不限定作用域，shim 里的
 # 内核宏清理会泄漏到内核翻译单元，把 current 之类的宏抽掉。
 # 用 CFLAGS_<obj> 逐对象注入：kbuild 按对象名匹配，我们的文件都是 kdg_*
 # 前缀、与 mbedTLS 的文件名不会相撞。
-$(foreach o,$(KDG_MBEDTLS_OBJS),$(eval CFLAGS_$(o) += -DKDG_MBEDTLS_TU=1))
+$(foreach o,$(KDG_MBEDTLS_OBJS),$(eval CFLAGS_$(o) += -DKDG_SHIM_TU=1))
+
+# nghttp2：同样逐文件列入复合对象，源文件由 tools/build.sh 同步到生成目录。
+# 只需要客户端的库核心：不移植 nghttpx/nghttpd/h2load、不移植 libevent 与
+# TLS 封装（方案 §6.3 明确划定的移植边界）。
+KDG_NGHTTP2_OBJS := $(patsubst $(src)/nghttp2/%.c,nghttp2/%.o,\
+			$(wildcard $(src)/nghttp2/*.c))
+kdnsguard-y += $(KDG_NGHTTP2_OBJS)
+$(foreach o,$(KDG_NGHTTP2_OBJS),$(eval CFLAGS_$(o) += -DKDG_SHIM_TU=1))
 
 # ── 包含路径 ────────────────────────────────────────────────────────────
 # kdg.h 用 "uapi/kdnsguard.h" 引用 UAPI，故需要 include/ 在搜索路径上。
@@ -59,6 +67,7 @@ KDG_THIRD := $(src)/../third_party
 ccflags-y += -I$(KDG_THIRD)/mbedtls-kernel/shim
 ccflags-y += -I$(KDG_THIRD)/mbedtls-kernel
 ccflags-y += -I$(KDG_THIRD)/mbedtls/include
+ccflags-y += -I$(KDG_THIRD)/nghttp2/includes
 ccflags-y += -DMBEDTLS_CONFIG_FILE='"kdnsguard_mbedtls_config.h"'
 
 # 刻意**不加** -Wall -Wextra：内核头自身（如 include/linux/kcsan-checks.h 的

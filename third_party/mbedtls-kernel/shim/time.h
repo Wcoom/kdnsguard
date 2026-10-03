@@ -14,6 +14,7 @@
 #define _KDG_SHIM_TIME_H
 
 #include <linux/types.h>
+#include <linux/timekeeping.h>
 #include "_kdg_common.h"
 
 typedef long time_t;
@@ -22,5 +23,18 @@ typedef long time_t;
  * （字段名相同但布局不同），重复定义会直接撞车。
  * MBEDTLS_HAVE_TIME_DATE 已在本项目配置里关闭 —— 证书只比较 time_t 数值，
  * 不做日期字符串格式化 —— 所以这里不需要 tm 的任何东西。 */
+
+/*
+ * time()：nghttp2 的 nghttp2_time.c 在不定义 HAVE_CLOCK_GETTIME 时走
+ * 这条回退路径。给它墙上时间（与 mbedTLS 侧的 kdg_mbedtls_time 同源）。
+ */
+static inline time_t time(time_t *t)
+{
+	time_t now = (time_t)ktime_get_real_seconds();
+
+	if (t)
+		*t = now;
+	return now;
+}
 
 #endif /* _KDG_SHIM_TIME_H */
