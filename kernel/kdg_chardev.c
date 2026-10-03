@@ -32,10 +32,13 @@
 #include <linux/uaccess.h>
 #include <linux/poll.h>
 #include <linux/mutex.h>
+#include <linux/cred.h>
+#include <linux/uidgid.h>
 
 #include "kdg.h"
 #include "kdg_doh.h"
 #include "kdg_resolve.h"
+#include "kdg_quota.h"
 
 struct kdg_file_ctx {
 	struct mutex		lock;		/* 串行化同一 fd 上的 write/read */
@@ -72,7 +75,22 @@ static int kdg_do_query(struct kdg_file_ctx *ctx, const struct kdg_req_v1 *req,
 	if (req->deadline_ms)
 		ctx->cfg.deadline_ms = req->deadline_ms;
 
+	/*
+	 * 配额准入（方案 §7.3「每调用方 token bucket」）。
+	 *
+	 * 身份取自**内核凭据**而不是请求里自报的字段 —— 方案 §7.2/§14.2
+	 * 都点名「不信任用户传入的 UID」。超额时明确失败（KDG_ST_EAGAIN）
+	 * 而不是排队：同步模型下没有队列可排，而「不让一个跑飞的 App
+	 * 阻塞整机」才是这条要求的本意。
+	 */
 	{
+		u32 uid = from_kuid(&init_user_ns, current_fsuid());
+
+		if (kdg_quota_charge(uid) != 0)
+			ret = -EAGAIN;
+	}
+
+	if (ret == 0) {
 		struct kdg_resolve_req rq = {
 			.cfg = &ctx->cfg,
 			/* P2 阶段还没有网络上下文输入面（方案 §5.3 的
@@ -124,7 +142,7 @@ static int kdg_status_from_errno(int err)
 {
 	switch (err) {
 	case 0:			return KDG_ST_OK;
-	case -EAGAIN:		return KDG_ST_EUPSTREAM;
+	case -EAGAIN:		return KDG_ST_EAGAIN;
 	case -ETIMEDOUT:	return KDG_ST_ETIMEDOUT;
 	case -EACCES:		return KDG_ST_EPERM;
 	case -EMSGSIZE:		return KDG_ST_EMSGSIZE;

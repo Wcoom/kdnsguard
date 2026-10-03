@@ -124,6 +124,9 @@ enum kdg_health_attr {
 	KDG_HA_SF_INFLIGHT,		/* u32：当前在途合并项 */
 	KDG_HA_SF_WAITERS,		/* u32：当前挂载的 waiter */
 	KDG_HA_SF_REJECTED,		/* u64：因上限被拒的合并 */
+	KDG_HA_QUOTA_ALLOWED,		/* u64 */
+	KDG_HA_QUOTA_DENIED,		/* u64：超额被拒 */
+	KDG_HA_QUOTA_BUCKETS,		/* u32：已用的配额桶数 */
 	__KDG_HA_MAX,
 };
 #define KDG_HA_MAX (__KDG_HA_MAX - 1)

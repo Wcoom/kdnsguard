@@ -27,6 +27,7 @@ kdnsguard-y += kdg_wire.o
 kdnsguard-y += kdg_cache.o
 kdnsguard-y += kdg_cache_tab.o
 kdnsguard-y += kdg_sflight.o
+kdnsguard-y += kdg_quota.o
 kdnsguard-y += kdg_resolve.o
 # mbedTLS：**逐文件**列入复合对象，不能写 `kdnsguard-y += mbedtls/`。
 # 子目录写法只对 obj-y / obj-m 生效；对复合对象（kdnsguard-y）会被当成一个
@@ -37,6 +38,14 @@ kdnsguard-y += kdg_resolve.o
 KDG_MBEDTLS_OBJS := $(patsubst $(src)/mbedtls/%.c,mbedtls/%.o,\
 			$(wildcard $(src)/mbedtls/*.c))
 kdnsguard-y += $(KDG_MBEDTLS_OBJS)
+
+# 只给 mbedTLS 的翻译单元打上 KDG_MBEDTLS_TU。
+# 上面那些 shim 头在全局 -I 上（mbedTLS 用 <string.h> 这类 libc 风格名字
+# include），但内核头也可能 include 同名文件 —— 若不限定作用域，shim 里的
+# 内核宏清理会泄漏到内核翻译单元，把 current 之类的宏抽掉。
+# 用 CFLAGS_<obj> 逐对象注入：kbuild 按对象名匹配，我们的文件都是 kdg_*
+# 前缀、与 mbedTLS 的文件名不会相撞。
+$(foreach o,$(KDG_MBEDTLS_OBJS),$(eval CFLAGS_$(o) += -DKDG_MBEDTLS_TU=1))
 
 # ── 包含路径 ────────────────────────────────────────────────────────────
 # kdg.h 用 "uapi/kdnsguard.h" 引用 UAPI，故需要 include/ 在搜索路径上。

@@ -19,6 +19,20 @@
  * 本文件只被 mbedTLS 的翻译单元与 kdg_mbedtls.c 经过，不影响内核其它代码。
  */
 /*
+ * ⚠️ **本文件的清理只在 KDG_MBEDTLS_TU 被定义时生效**。
+ *
+ * 那些 shim 头是放在全局 -I 上的（因为 mbedTLS 用 <string.h> 这类
+ * libc 风格的名字去 include）。但内核头也可能 include 同名文件，于是
+ * 清理会**泄漏到内核翻译单元**，把 current 之类的内核宏从内核代码脚下
+ * 抽掉。实测症状：kdg_chardev.c 里 `current_fsuid()` 报
+ * "use of undeclared identifier 'current'"。
+ *
+ * 靠调整 include 顺序只是碰运气；正确做法是给清理加作用域。
+ * KDG_MBEDTLS_TU 由 kernel/Makefile 用逐对象旗标只打给 mbedtls/*.o。
+ */
+#if defined(KDG_MBEDTLS_TU)
+
+/*
  * ⚠️ **本文件刻意没有 include guard**。
  *
  * 清理动作必须**幂等且可重入**：mbedTLS 的文件常常先 include "common.h"
@@ -86,3 +100,4 @@
  * 定义、因而无法出现在 #if 里的那几个；其余保留内核的即可。
  */
 
+#endif /* KDG_MBEDTLS_TU */

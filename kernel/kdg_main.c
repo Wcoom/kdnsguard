@@ -158,9 +158,20 @@ static int __init kdg_init(void)
 		return ret;
 	}
 
+	ret = kdg_quota_init();
+	if (ret) {
+		pr_err("配额表初始化失败: %d\n", ret);
+		kdg_sflight_exit();
+		kdg_cache_tab_exit();
+		kdg_genl_exit();
+		kdg_tls_global_exit();
+		return ret;
+	}
+
 	ret = kdg_sflight_init();
 	if (ret) {
 		pr_err("同名合并表初始化失败: %d\n", ret);
+		kdg_quota_exit();
 		kdg_cache_tab_exit();
 		kdg_genl_exit();
 		kdg_tls_global_exit();
@@ -182,6 +193,7 @@ static int __init kdg_init(void)
 		pr_err("pernet 子系统注册失败: %d\n", ret);
 		kdg_chardev_exit();
 		kdg_sflight_exit();
+		kdg_quota_exit();
 		kdg_cache_tab_exit();
 		kdg_genl_exit();
 		kdg_tls_global_exit();
@@ -204,6 +216,7 @@ static void __exit kdg_exit(void)
 	unregister_pernet_subsys(&kdg_net_ops);
 	kdg_chardev_exit();
 	kdg_sflight_exit();
+	kdg_quota_exit();
 	kdg_cache_tab_exit();
 	kdg_tls_global_exit();
 

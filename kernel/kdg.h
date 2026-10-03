@@ -103,6 +103,10 @@ void kdg_cache_tab_exit(void);
 int kdg_sflight_init(void);
 void kdg_sflight_exit(void);
 
+/* kdg_quota.c —— 每调用方配额 */
+int kdg_quota_init(void);
+void kdg_quota_exit(void);
+
 /* kdg_chardev.c —— 查询面 /dev/kdnsguard */
 int kdg_chardev_init(void);
 void kdg_chardev_exit(void);
