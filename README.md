@@ -9,16 +9,47 @@
 
 ---
 
-## 当前状态：P0 完成，内核骨架已真机验证
+## 当前状态：P0 完成，P1 达成
 
 | 阶段 | 状态 |
 |---|---|
 | **P0** 环境锁定 / 依赖锁定 / 授权核对 | ✅ 完成，见 [`docs/P0-findings.md`](docs/P0-findings.md) |
 | **内核骨架** 生命周期 / NAT 注册 / DNS 校验器 / UAPI | ✅ 完成并真机验证 |
-| P1 内核 TLS + H1 原型 | ⬜ 未开始（先决项：mbedTLS 内核移植层） |
-| P2 H2 + 解析核心 | ⬜ 未开始 |
+| **P1** 内核 TLS + H1 DoH 原型 | ✅ **达成方案 §19 的第一个可验收成果** |
+| P2 H2 + 解析核心（缓存/合并/公平队列） | ⬜ 未开始 |
 | P3 全局接管 | ⬜ 未开始 |
 | P4–P7 | ⬜ 未开始 |
+
+### P1 验收：不改全局网络、通过 API 完成经证书验证的 DoH 查询
+
+真机实测（OnePlus 13，内核 `6.6.118-…-abogki20260727-4k`）：
+
+```
+kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN http/1.1）
+
+$ kdgctl query github.com
+响应: status=0 errno=0 resp_len=…      DNS: rcode=0
+  A 140.82.121.4
+```
+
+| 域名 | 解析结果 |
+|---|---|
+| example.com | 104.20.23.154, 172.66.147.243 |
+| www.baidu.com | 182.61.200.108, 182.61.200.110 |
+| github.com | 140.82.121.4 |
+| one.one.one.one | 1.1.1.1, 1.0.0.1 |
+
+健康计数 `DOH_QUERIES=8 / DOH_OK=8 / LAST_STATUS=200 / LAST_RTT=150ms`，
+连续多轮稳定；DNS 接管仍**默认关闭**，对系统零行为影响。
+
+链路全程在内核：内核 TCP socket → 内核 TLS（mbedTLS 3.6.7，证书链 + 主机名校验，
+`VERIFY_REQUIRED` 不可关闭）→ 内核 HTTP/1.1 解析 → DoH POST。
+用户空间只通过 `/dev/kdnsguard` 提交 wire 报文。
+
+⚠️ **一个值得记住的缺陷已在 P1 定位并修复**：shim 里把 `UINT_MAX` 写成 `(~0U)`，
+而 C 预处理器按 `intmax_t` 运算，`(~0U)` 在 `#if` 里是 **64 位全 1**，
+导致 mbedTLS 把 64 位肢体误判为 32 位、选中 `__builtin_clz`。
+复盘见 [`docs/P1-ecp-rootcause.md`](docs/P1-ecp-rootcause.md)。
 
 ### ⚠️ 两条必须先知道的事实
 

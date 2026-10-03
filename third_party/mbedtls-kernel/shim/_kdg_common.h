@@ -50,8 +50,24 @@
 #undef INT_MIN
 #define INT_MIN		(-INT_MAX - 1)
 
+/*
+ * 🔴 UINT_MAX 必须写成**字面常量**，不能写 (~0U)。
+ *
+ * 这一条曾让整个 TLS 链路瘫痪，值得完整记录：
+ *   C 预处理器里的整数一律按 intmax_t/uintmax_t 运算（本机 64 位）。
+ *   于是 `(~0U)` 在 #if 里求值成 0xFFFFFFFFFFFFFFFF，**不是** 32 位的
+ *   0xFFFFFFFF。而 mbedTLS 的 bignum_core.c 正是这么选 clz 实现的：
+ *       #if (MBEDTLS_MPI_UINT_MAX == UINT_MAX)   -> __builtin_clz  (32 位!)
+ *       #elif (MBEDTLS_MPI_UINT_MAX == ULONG_MAX) -> __builtin_clzl
+ *   两者都被算成 0xFFFFFFFFFFFFFFFF，于是 64 位肢体被错判为 32 位，
+ *   选中 __builtin_clz -> 高位被截断 -> mbedtls_mpi_bitlen() 结果错误
+ *   -> mbedtls_mpi_size(P) 错误 -> 一切基于它的运算全错。
+ *
+ * 表现极具迷惑性：P-256 挂、P-384 不挂 —— 因为 P-384 的最高 limb 是
+ * 全 1，截断后 clz 恰好仍为 0。**它不是没坏，是这个输入掩盖了 bug。**
+ */
 #undef UINT_MAX
-#define UINT_MAX	(~0U)
+#define UINT_MAX	4294967295U
 
 #undef LONG_MAX
 #define LONG_MAX	(~0UL >> 1)

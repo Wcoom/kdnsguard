@@ -271,16 +271,11 @@ int kdg_tls_session_open(struct kdg_tls *t, struct kdg_sock *sock,
 	/* 证书验证绝不关闭（方案 §6.2 的硬性要求）。 */
 	mbedtls_ssl_conf_authmode(&t->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
 
-	/*
-	 * ⚠️ 临时限制到 TLS 1.2。理由与待办见 docs/P1-tls13-psa-issue.md：
-	 * 本内核上 mbedTLS 3.6.7 的 TLS 1.3 在生成 ECDHE 密钥份额时，
-	 * psa_export_public_key() 会**非确定性**地返回 PSA_ERROR_INVALID_ARGUMENT
-	 * （同一输入时好时坏，仅 P-384 稳定成功），属移植层问题、尚未定位。
-	 * 方案 §6.2 明确允许保留 TLS 1.2 互操作路径，故先以 1.2 打通全链路，
-	 * 把 TLS 1.3 作为独立待办跟踪。
-	 */
+	/* TLS 1.3 优先，保留 TLS 1.2 作为互操作路径（方案 §6.2）。
+	 * 曾一度被迫限制到 1.2，根因是 shim 里 UINT_MAX 写成 (~0U) 导致
+	 * mbedtls_mpi_bitlen() 错误、P-256 全链路失败；已修复，见
+	 * third_party/mbedtls-kernel/shim/_kdg_common.h 的详细记录。 */
 	mbedtls_ssl_conf_min_tls_version(&t->conf, MBEDTLS_SSL_VERSION_TLS1_2);
-	mbedtls_ssl_conf_max_tls_version(&t->conf, MBEDTLS_SSL_VERSION_TLS1_2);
 
 	if (READ_ONCE(kdg_debug)) {
 		mbedtls_debug_set_threshold(4);

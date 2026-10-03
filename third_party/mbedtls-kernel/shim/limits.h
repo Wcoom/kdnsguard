@@ -21,8 +21,9 @@
 #undef SIZE_MAX
 #define SIZE_MAX  (~0UL)
 
+/* 同 _kdg_common.h 的说明：必须是字面常量，(~0U) 在 #if 里是 64 位全 1。 */
 #ifndef UINT_MAX
-#define UINT_MAX  (~0U)
+#define UINT_MAX  4294967295U
 #endif
 #ifndef INT_MAX
 #define INT_MAX   2147483647

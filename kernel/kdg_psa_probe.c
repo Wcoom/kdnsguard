@@ -28,6 +28,15 @@
 
 #include "kdg.h"
 
+/*
+ * ⚠️ 仅本文件定义 MBEDTLS_ALLOW_PRIVATE_ACCESS。
+ *
+ * 它只影响 MBEDTLS_PRIVATE(x) 展开成 x 还是 private_##x —— **结构体布局完全相同**，
+ * C 不把成员名编进 ABI，因此本翻译单元与库的其它翻译单元混用是安全的。
+ * 但它绝不该定义在库或主代码里，故只出现在这个排障文件中。
+ */
+#define MBEDTLS_ALLOW_PRIVATE_ACCESS
+
 #include <psa/crypto.h>
 #include <mbedtls/ecp.h>
 
@@ -268,12 +277,53 @@ static void probe_known_generator(void)
 		mbedtls_ecp_point_init(&P);
 
 		r1 = mbedtls_ecp_group_load(grp, cases[i].id);
+
+		/*
+		 * 群类型是理解 read_binary 为何拒绝的关键：
+		 * mbedtls_ecp_point_read_binary 按类型分支，WEIERSTRASS 期望
+		 * 1 + 2*size(P) 字节，而 MONTGOMERY 只期望 size(P) 字节。
+		 * 类型又由 grp->G.Y.p 是否为 NULL 决定（ecp.c:488）。
+		 */
+		pr_info("群类型 %s = %d (0=NONE 1=WEIERSTRASS 2=MONTGOMERY)\n",
+			cases[i].name, (int)mbedtls_ecp_get_type(grp));
+
+		/*
+		 * 把加载出来的 P 一行打完。不要分多行 pr_info —— dmesg 的环形
+		 * 缓冲会被撑爆，先打的内容反而被挤掉（踩过一次）。
+		 */
+		{
+			char buf[256];
+			int off = 0;
+			unsigned int k;
+
+			for (k = 0; k < grp->P.n && k < 8 && off < 200; k++)
+				off += scnprintf(buf + off, sizeof(buf) - off,
+						 " %016llx",
+						 (unsigned long long)grp->P.p[k]);
+			pr_info("%s: P.n=%u bitlen=%u size=%u pbits=%u nbits=%u G.Y=%s limbs:%s\n",
+				cases[i].name, (unsigned)grp->P.n,
+				(unsigned)mbedtls_mpi_bitlen(&grp->P),
+				(unsigned)mbedtls_mpi_size(&grp->P),
+				(unsigned)grp->pbits, (unsigned)grp->nbits,
+				grp->G.Y.p ? "set" : "NULL", buf);
+		}
+
 		r2 = mbedtls_ecp_point_read_binary(grp, &P, cases[i].g,
 						   cases[i].glen);
 		r3 = mbedtls_ecp_check_pubkey(grp, &P);
 
-		pr_info("已知生成元 %s: group_load=%d read_binary=%d check_pubkey=%d\n",
-			cases[i].name, r1, r2, r3);
+		/* 再试「当作蒙哥马利」的长度（只给 X，32 字节） */
+		{
+			mbedtls_ecp_point P2;
+			int r4;
+
+			mbedtls_ecp_point_init(&P2);
+			r4 = mbedtls_ecp_point_read_binary(grp, &P2,
+					cases[i].g + 1, (cases[i].glen - 1) / 2);
+			mbedtls_ecp_point_free(&P2);
+			pr_info("已知生成元 %s: group_load=%d 全长度读=%d 半长度读=%d check_pubkey=%d\n",
+				cases[i].name, r1, r2, r4, r3);
+		}
 
 		mbedtls_ecp_point_free(&P);
 		mbedtls_ecp_group_free(grp);
