@@ -45,6 +45,7 @@ struct kdg_resolve_stats {
 	u64 invalid_query;	/* 查询本身没通过有界校验 */
 	u64 invalid_response;	/* 上游响应没通过校验，拒绝回包 */
 	u64 not_cacheable;	/* 按策略不缓存（ECS/Cookie/TTL=0 等） */
+	u64 join_rejected;	/* 合并表满或 waiter 满，退化为独立走上游 */
 };
 void kdg_resolve_get_stats(struct kdg_resolve_stats *out);
 

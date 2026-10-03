@@ -26,6 +26,7 @@ kdnsguard-y += kdg_psa_probe.o
 kdnsguard-y += kdg_wire.o
 kdnsguard-y += kdg_cache.o
 kdnsguard-y += kdg_cache_tab.o
+kdnsguard-y += kdg_sflight.o
 kdnsguard-y += kdg_resolve.o
 # mbedTLS：**逐文件**列入复合对象，不能写 `kdnsguard-y += mbedtls/`。
 # 子目录写法只对 obj-y / obj-m 生效；对复合对象（kdnsguard-y）会被当成一个

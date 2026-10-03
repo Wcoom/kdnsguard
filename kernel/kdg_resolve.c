@@ -15,6 +15,7 @@
 #include "kdg_cache.h"
 #include "kdg_cache_tab.h"
 #include "kdg_wire.h"
+#include "kdg_sflight.h"
 
 static struct kdg_resolve_stats g_stat;
 
@@ -88,9 +89,15 @@ int kdg_resolve(const struct kdg_resolve_req *req,
 	struct kdg_query q;
 	struct kdg_summary summary;
 	void *pin = NULL;
+	struct kdg_flight *fl = NULL;
 	u8 *norm = NULL, *up = NULL;
 	u16 offs[KDG_CACHE_MAX_TTL_OFF];
-	size_t up_cap, up_len, out_len, caller_cap;
+	/* up_cap 必须在声明处初始化：它在步骤 4 被用于 kmalloc，
+	 * 而那时距离「曾经的赋值点」中间隔着重构 —— 漏掉它会让 kmalloc
+	 * 拿到栈上的垃圾值，表现为上游响应「缓冲不足」的 -EMSGSIZE，
+	 * 而日志里握手却明明成功了，极具误导性。 */
+	size_t up_cap = KDG_DOH_RX_MAX;
+	size_t up_len, out_len, caller_cap;
 	u64 now;
 	bool cacheable;
 	u32 ttl_s;
@@ -139,60 +146,128 @@ int kdg_resolve(const struct kdg_resolve_req *req,
 		pr_warn_ratelimited("缓存重封装失败 %d，改走上游\n", r);
 	}
 
-	/* ── 4. 上游 ── */
-	norm = kdg_query_normalized(qwire, qlen);
-	if (!norm)
+	/* ── 4. 同名合并（方案 §7.2/§7.3）──
+	 * 缓存未命中时，先看有没有别的调用方正在查同一个键。
+	 * 有就搭车，没有就自己成为 owner。 */
+	up = kmalloc(up_cap, GFP_KERNEL);
+	if (!up)
 		return -ENOMEM;
 
-	up_cap = KDG_DOH_RX_MAX;
-	up = kmalloc(up_cap, GFP_KERNEL);
-	if (!up) {
-		kfree(norm);
+	fl = NULL;
+	mk = kdg_sflight_begin(&key, &fl);
+
+	if (mk == KDG_SF_WAIT) {
+		ret = kdg_sflight_wait(fl, req->cfg->deadline_ms, up, up_cap,
+				       &up_len);
+		kdg_sflight_release(fl);
+		/* ⚠️ 必须立刻置 NULL：函数末尾有一段 `if (fl) publish + release`，
+		 * 那是给 owner 用的。搭车者若留着非空的 fl，就会去 publish 一个
+		 * 不属于它的 flight，并对同一引用再 release 一次 —— 双重递减
+		 * 会把 flight 提前释放，是 use-after-free。 */
+		fl = NULL;
+		if (ret) {
+			kfree(up);
+			return ret;
+		}
+		*src = KDG_SRC_JOINED;
+		g_stat.from_joined++;
+		/* 搭车拿到的响应，owner 侧已经校验过一遍；这里仍然自己再校验
+		 * 一次 —— 一次 walker 的代价，换掉「信任另一条路径的校验结果」
+		 * 这个隐患。 */
+		goto validate;
+	}
+	if (mk < 0) {
+		/* 合并表满 / waiter 满：**不当成错误**，退化为独立走上游。
+		 * 方案 §7.4 说「达上限显式拒绝」，这里拒绝的是**合并**而不是
+		 * **解析** —— 少一次优化可以，少一次解析不行。 */
+		fl = NULL;
+		g_stat.join_rejected++;
+	}
+
+	/* ── 5. 上游（只有 owner 或未能参与合并者走到这里）── */
+	norm = kdg_query_normalized(qwire, qlen);
+	if (!norm) {
+		if (fl) {
+			kdg_sflight_publish(fl, -ENOMEM, NULL, 0);
+			kdg_sflight_release(fl);
+		}
+		kfree(up);
 		return -ENOMEM;
 	}
 
 	up_len = up_cap;
 	ret = kdg_doh_query(req->cfg, norm, qlen, up, &up_len);
-	if (ret) {
-		kfree(up);
-		kfree(norm);
-		return ret;
-	}
-
-	/* ── 5. 校验上游响应确实是对**本次规范化查询**的响应 ──
-	 * 方案 §8：「拒绝跨上游身份跳转」。ID 已规范为 0，故拿规范化后的
-	 * 查询去匹配，而不是调用方那份带自己 ID 的。 */
-	ret = kdg_wire_match_response(norm, qlen, up, up_len, &summary);
-	if (ret < 0) {
-		pr_warn_ratelimited("上游响应未通过匹配校验: %d\n", ret);
-		g_stat.invalid_response++;
-		kfree(up);
-		kfree(norm);
-		return -EBADMSG;
-	}
 	kfree(norm);
 	norm = NULL;
 
-	g_stat.from_upstream++;
-
-	/* ── 6. 回填缓存 ──
-	 * 可缓存性由 kdg_wire_cacheable_ttl 决定，它已覆盖 §8 的全部规则：
-	 * TC 截断、扩展 rcode、非 NOERROR/NXDOMAIN、TTL=0、负缓存上限等。 */
-	ttl_s = kdg_wire_cacheable_ttl(&summary, true);
-	cacheable = (ttl_s > 0);
-	if (cacheable) {
-		int pr = kdg_cache_put(&key, up, up_len, now,
-				       ttl_s > (U32_MAX / 1000u) ? U32_MAX
-							 : ttl_s * 1000u);
-
-		if (pr == 0)
-			g_stat.cache_put_ok++;
-		else {
-			g_stat.cache_put_fail++;
-			/* 写不进缓存不是错误：本次照常回包，只是下次还得走上游。 */
+	if (ret) {
+		/* 失败也要 publish：否则 waiter 会一直等到自己的超时，
+		 * 平白多等一个 deadline。 */
+		if (fl) {
+			kdg_sflight_publish(fl, ret, NULL, 0);
+			kdg_sflight_release(fl);
 		}
-	} else {
-		g_stat.not_cacheable++;
+		kfree(up);
+		return ret;
+	}
+
+validate:
+	/* ── 6. 校验上游响应确实是对**本次规范化查询**的响应 ──
+	 * 方案 §8：「拒绝跨上游身份跳转」。ID 已规范为 0，故拿规范化后的
+	 * 查询去匹配。此处不能复用已释放的 norm，重新构造一份。 */
+	{
+		u8 *chk = kdg_query_normalized(qwire, qlen);
+
+		if (!chk) {
+			if (fl) {
+				kdg_sflight_publish(fl, -ENOMEM, NULL, 0);
+				kdg_sflight_release(fl);
+			}
+			kfree(up);
+			return -ENOMEM;
+		}
+		ret = kdg_wire_match_response(chk, qlen, up, up_len, &summary);
+		kfree(chk);
+	}
+	if (ret < 0) {
+		pr_warn_ratelimited("上游响应未通过匹配校验: %d\n", ret);
+		g_stat.invalid_response++;
+		if (fl) {
+			kdg_sflight_publish(fl, -EBADMSG, NULL, 0);
+			kdg_sflight_release(fl);
+		}
+		kfree(up);
+		return -EBADMSG;
+	}
+
+	if (*src == KDG_SRC_UPSTREAM)
+		g_stat.from_upstream++;
+
+	/* ── 7. 回填缓存（只有 owner 写；搭车者的 owner 已经写过）── */
+	if (*src == KDG_SRC_UPSTREAM) {
+		ttl_s = kdg_wire_cacheable_ttl(&summary, true);
+		cacheable = (ttl_s > 0);
+		if (cacheable) {
+			int pr = kdg_cache_put(&key, up, up_len, now,
+					       ttl_s > (U32_MAX / 1000u)
+					       ? U32_MAX : ttl_s * 1000u);
+
+			if (pr == 0)
+				g_stat.cache_put_ok++;
+			else
+				g_stat.cache_put_fail++;
+			/* 写不进缓存不是错误：本次照常回包，只是下次还得走上游。 */
+		} else {
+			g_stat.not_cacheable++;
+		}
+	}
+
+	/* 缓存写好之后再 publish：这样被唤醒的 waiter 若立刻再发一次查询，
+	 * 命中的是缓存而不是又一次未命中。 */
+	if (fl) {
+		kdg_sflight_publish(fl, 0, up, up_len);
+		kdg_sflight_release(fl);
+		fl = NULL;
 	}
 
 	/* ── 7. 回包 ──

@@ -119,6 +119,11 @@ enum kdg_health_attr {
 	KDG_HA_CACHE_MEM_BYTES,		/* u32：当前核算占用 */
 	KDG_HA_RESOLVE_CACHE,		/* u64：由缓存满足的解析次数 */
 	KDG_HA_RESOLVE_UPSTREAM,	/* u64：真正走上游的次数 */
+	KDG_HA_RESOLVE_JOINED,		/* u64：搭车（同名合并）满足的解析次数 */
+	KDG_HA_RESOLVE_CACHE_PUT,	/* u64：成功写入缓存的次数 */
+	KDG_HA_SF_INFLIGHT,		/* u32：当前在途合并项 */
+	KDG_HA_SF_WAITERS,		/* u32：当前挂载的 waiter */
+	KDG_HA_SF_REJECTED,		/* u64：因上限被拒的合并 */
 	__KDG_HA_MAX,
 };
 #define KDG_HA_MAX (__KDG_HA_MAX - 1)

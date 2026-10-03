@@ -99,6 +99,10 @@ void kdg_psa_probe(void);
 int kdg_cache_tab_init(void);
 void kdg_cache_tab_exit(void);
 
+/* kdg_sflight.c —— 同名查询合并 */
+int kdg_sflight_init(void);
+void kdg_sflight_exit(void);
+
 /* kdg_chardev.c —— 查询面 /dev/kdnsguard */
 int kdg_chardev_init(void);
 void kdg_chardev_exit(void);

@@ -23,6 +23,7 @@
 #include "kdg_doh.h"
 #include "kdg_cache_tab.h"
 #include "kdg_resolve.h"
+#include "kdg_sflight.h"
 
 /* 骨架阶段的安全闸：即使有人拿到 CAP_NET_ADMIN 并调用 ENABLE_INTERCEPT，
  * 只要模块不是以 allow_intercept=1 加载的，就拒绝启用。理由是本阶段
@@ -182,10 +183,12 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 		struct kdg_doh_stats ds;
 		struct kdg_cache_stats cs;
 		struct kdg_resolve_stats rs;
+		struct kdg_sflight_stats fs;
 
 		kdg_doh_get_stats(&ds);
 		kdg_cache_stats(&cs);
 		kdg_resolve_get_stats(&rs);
+		kdg_sflight_stats(&fs);
 		if (nla_put_u32(msg, KDG_HA_CA_COUNT, kdg_tls_ca_count()) ||
 		    nla_put_u64_64bit(msg, KDG_HA_DOH_QUERIES, ds.queries,
 				      KDG_HA_UNSPEC) ||
@@ -208,7 +211,15 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 		    nla_put_u64_64bit(msg, KDG_HA_RESOLVE_CACHE, rs.from_cache,
 				      KDG_HA_UNSPEC) ||
 		    nla_put_u64_64bit(msg, KDG_HA_RESOLVE_UPSTREAM,
-				      rs.from_upstream, KDG_HA_UNSPEC)) {
+				      rs.from_upstream, KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_RESOLVE_JOINED,
+				      rs.from_joined, KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_RESOLVE_CACHE_PUT,
+				      rs.cache_put_ok, KDG_HA_UNSPEC) ||
+		    nla_put_u32(msg, KDG_HA_SF_INFLIGHT, fs.inflight) ||
+		    nla_put_u32(msg, KDG_HA_SF_WAITERS, fs.waiters) ||
+		    nla_put_u64_64bit(msg, KDG_HA_SF_REJECTED,
+				      fs.rejected_full, KDG_HA_UNSPEC)) {
 			nla_nest_cancel(msg, nest);
 			goto nla_failure;
 		}
