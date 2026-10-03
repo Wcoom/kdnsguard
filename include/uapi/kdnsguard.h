@@ -82,6 +82,26 @@ enum kdg_genl_attr {
 };
 #define KDG_A_MAX (__KDG_A_MAX - 1)
 
+/* KDG_A_HEALTH 的嵌套子属性。与 struct kdg_health_v1 表达同一组事实，
+ * 但走 netlink 属性而非定长结构——两条通路各自自洽，不互相复制布局。 */
+enum kdg_health_attr {
+	KDG_HA_UNSPEC,
+	KDG_HA_OWNERSHIP,		/* u32：enum kdg_ownership */
+	KDG_HA_UPSTREAM_OK,		/* u8 */
+	KDG_HA_CONSECUTIVE_FAILURES,	/* u32 */
+	KDG_HA_BACKOFF_UNTIL_MS,	/* u32，0 表示未退避 */
+	KDG_HA_LAST_ERRNO,		/* s32，0 表示无 */
+	KDG_HA_NAT_SEEN,		/* u64：观察到的 53 端口报文数 */
+	KDG_HA_NAT_REDIRECTED,		/* u64：实际改写的 */
+	KDG_HA_NAT_BYPASSED,		/* u64：命中但按策略放行的 */
+	/* 追加于尾部（尾部追加不破坏既有 ABI）。hook_calls - seen 就是
+	 * 「进来了但没被判为 DNS」的量，是区分「hook 没挂上」与
+	 * 「挂上了但判定错」的关键诊断量。 */
+	KDG_HA_NAT_HOOK_CALLS,		/* u64：hook 被调用的总次数 */
+	__KDG_HA_MAX,
+};
+#define KDG_HA_MAX (__KDG_HA_MAX - 1)
+
 /* CAPS 能力位。未置位即表示**不支持**，调用方不得据此推断可用。 */
 #define KDG_CAP_IPV4			(1U << 0)
 #define KDG_CAP_IPV6			(1U << 1)

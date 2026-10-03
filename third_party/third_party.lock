@@ -1,0 +1,129 @@
+# kdnsguard third_party.lock —— 依赖锁定与授权审计
+#
+# 方案 §3.1 的硬性要求：正式构建**禁止**直接跟随 master/main；每个依赖必须锁定
+# 到完整 commit，并记录许可证与核查日期。
+#
+# 本文件在 2026-10-03 建立。下面记录的 SHA 是当日的各仓库 HEAD，作为**初始基线**；
+# 它们**尚未被拉取、交叉编译或审计过**（本机当日只做了许可证文本核对）。
+# P1 必须完成：拉取 → 记录源码 SHA-256 → 判定可否编入本内核 → 之后才允许构建。
+#
+# ⚠️ 格式约定：本文件是给人和工具同时读的。改动只允许追加或修改字段值，
+# 不要重排布局 —— tools/manifest.sh 会把它整体摘要进构建清单。
+
+version = 1
+audited_at = 2026-10-03
+audited_by = Wcoom + Claude Code
+
+# ─────────────────────────────────────────────────────────────────────────
+# 关键结论：原方案的 TLS 依赖不可用，已换选
+# ─────────────────────────────────────────────────────────────────────────
+#
+# 方案原文选 wolfSSL linuxkm 作为内核 TLS 实现。**该路线在无商业许可时不可发布。**
+#
+# 取证（wolfSSL 仓库 master 分支 LICENSING 原文，2026-10-03 拉取）：
+#   "The wolfSSL software ... is made available under the GNU General Public
+#    License version 3 (GPLv3) with the following exception: When this wolfSSL
+#    Software is combined with the software listed below, licensee may elect to
+#    license this wolfSSL Software under the GNU General Public License version 2
+#    instead of GPLv3.
+#    Exception Software: MariaDB Server / MariaDB Client Libraries / OpenVPN-NL /
+#    Fetchmail / OpenVPN / SWUpdate / RPCS3 / VDE / U-Boot (from Cisco Systems, Inc. only)"
+#
+# **Linux 内核不在这份封闭清单里**，linuxkm/README.md 也未提供任何额外授权。
+# GPLv3 代码与 GPLv2-only 的 Linux 内核组合，除非取得商业许可，否则不成立。
+# 这正是方案 §3.1 自设的门槛判定：「若无法获得适用授权，应停止此依赖路线并重新选型」。
+#
+# 用户裁决（2026-10-03）：改用 mbedTLS。代价是 mbedTLS 没有现成的内核移植层
+# （wolfSSL 的 linuxkm 正是别人替你写好的那一层），P1 需自行实现内存/时间/熵/
+# threading alt 与 socket send-recv 回调。
+
+[wolfssl]
+status    = REJECTED
+reason    = "GPLv3；其 GPLv2 例外清单为封闭集合且不含 Linux 内核，无免费许可路径"
+license   = GPL-3.0-only with closed GPLv2 exception list; commercial option available
+used_for  = 内核 TLS（方案 §6.2）
+verdict   = 需要商业许可方可使用；本项目不采用
+
+# ─────────────────────────────────────────────────────────────────────────
+# 采用 / 待采用
+# ─────────────────────────────────────────────────────────────────────────
+
+[mbedtls]
+repo      = https://github.com/Mbed-TLS/mbedtls
+commit    = c0748befd5beebad73e1797732290e6f7181a08f
+license   = Apache-2.0 OR GPL-2.0-or-later（双许可，README 明示）
+license_ok = yes  # GPL-2.0-or-later 可按 GPL-2.0 使用，与 GPLv2-only 的内核相容
+used_for  = 内核 TLS 客户端（H1 先导 / H2 主线，方案 §6.2–6.4）
+status    = SELECTED，尚未拉取或交叉编译
+notes     = 需自写内核移植层：MBEDTLS_PLATFORM_C（calloc/free/snprintf）、
+            时间源、熵源、threading alt、以及 mbedtls_ssl_set_bio 的
+            send/recv 回调接到 kernel_sendmsg/kernel_recvmsg。
+            证书链路径校验由 mbedtls_x509_crt_verify 提供（含 SAN/有效期/
+            基本约束），这是选它而非自研 TLS 的主要理由。
+
+[nghttp2]
+repo      = https://github.com/nghttp2/nghttp2
+commit    = 19d06e62185d93d2398d85241cdbb460349bfe44
+license   = MIT
+license_ok = yes
+used_for  = H2 会话/HPACK/流控/帧校验（方案 §6.3）
+status    = 待移植（仅客户端库核心）
+notes     = 不移植 nghttp/nghttpd/libevent/命令行/TLS 封装；用自定义 allocator
+            与内存 I/O API 对接内核。保留 upstream 子目录 + 独立补丁，
+            不改写 HPACK 算法。
+
+[llhttp]
+repo      = https://github.com/nodejs/llhttp
+commit    = 69936dbc22922e596a05dfa912fc11d9a7af2136
+license   = MIT
+license_ok = yes
+used_for  = H1 增量响应解析（方案 §6.4）
+status    = 待移植
+
+[nghttp3]
+repo      = https://github.com/ngtcp2/nghttp3
+commit    = 2304973e5a0c8b1fa4bb380b47945a000357f87f
+license   = MIT
+license_ok = yes
+used_for  = HTTP/3 与 QPACK（P7，实验阶段）
+status    = 暂缓（H3 未立项）
+
+[lxin-quic]
+repo      = https://github.com/lxin/quic
+commit    = 5705d4fcc31135a633504f575eb9e5acbf0fba8f
+license   = ⚠️ NOASSERTION —— GitHub 未能识别标准许可证，**必须人工核实**
+license_ok = UNKNOWN
+used_for  = 内核 QUIC 数据层（P7，实验阶段）
+status    = BLOCKED —— 在许可证核实清楚之前不得引入
+notes     = 其官方设计把 TLS 握手放在用户空间，本身就不是满足「全内核」要求的
+            成品（方案 §6.5 已指出）。引入前需先解决许可证问题。
+
+[dnsproxy]
+repo      = https://github.com/AdguardTeam/dnsproxy
+commit    = (未锁定；仅作参考，不引入)
+license   = Apache-2.0
+used_for  = 上游互操作测试、DoH/H3 行为参考
+status    = 参考实现，Go 用户态，不编入内核
+
+[ldns]
+repo      = https://github.com/NLnetLabs/ldns
+commit    = d945c7436aed094df630de1b4a63490670fb9b07
+license   = ISC
+license_ok = yes
+used_for  = **主机端**协议差分测试与语料生成（不编入内核）
+status    = 待引入（测试工具）
+
+# ─────────────────────────────────────────────────────────────────────────
+# 本体内核自带、无需第三方许可的组件（P0 核验确认为 =y）
+# ─────────────────────────────────────────────────────────────────────────
+#   CONFIG_X509_CERTIFICATE_PARSER=y   内核自带 X.509 解析
+#   CONFIG_PKCS7_MESSAGE_PARSER=y      内核自带 PKCS#7
+#   CONFIG_SYSTEM_TRUSTED_KEYRING=y    系统信任密钥环
+#   CONFIG_CRYPTO_{AES,GCM,SHA256,SHA512,ECC,ECDH,RSA,ECDSA,CHACHA20POLY1305}=y
+#   → 见 docs/P0-findings.md 第 2 节。这意味着**即便 mbedTLS 路线受阻，
+#     仍存在纯 GPLv2 的自研路径**（用树内 crypto + 树内 X.509 手写 TLS 1.3
+#     客户端），零第三方依赖、零许可风险，代价是工作量最大。
+#
+#   本次未启用的项（不影响主线，记录备查）：
+#   CONFIG_CRYPTO_CURVE25519 未开 → X25519 当前不可用；P-256 可用，而
+#   RFC 8446 把 secp256r1 列为 TLS 1.3 的必须支持项，故不阻塞。需要 X25519 时加一个 CONFIG。

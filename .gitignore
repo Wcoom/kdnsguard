@@ -9,4 +9,8 @@ kernel/.tmp_versions/
 kernel/Module.symvers
 kernel/modules.order
 kernel/.*.cmd
+# 诊断客户端构建产物（源码入库，二进制不入库）
+tools/kdgctl
+# 构建日志与生成的清单
 *.log
+third_party/manifest.txt

@@ -1,0 +1,85 @@
+#!/bin/bash
+# build.sh —— 构建 kdnsguard.ko
+#
+# 目标内核就是本工作区自建的 out/（设备当前跑的就是它），所以**不覆盖**
+# utsrelease.h，vermagic 天然一致 —— 这一点与 fq_guard_ko 相反（后者是给
+# 上游 prebuilt 内核用的，必须伪造 vermagic）。
+#
+# 三个已知坑（与 ddl_guard_ko 同源，已在那边验证过）：
+#  1) CONFIG_MODULE_SIG_ALL=y 会拿本地密钥签名，而设备端 SIG_FORCE 未开，
+#     未签名模块可直接加载、签名反而可能验签失败 ⇒ 命令行覆盖为不签名；
+#  2) 本树的 check_version() 恒返回 1（来自可单独 revert 的 LXC 补丁
+#     84708f314ec5c），CRC 不匹配也会放行 —— 但这**不是**可以乱写符号的理由，
+#     本模块只用 Module.symvers 里有的导出符号，未定义符号一律视为错误；
+#  3) 每次重刷内核后 vermagic/CRC 都会变，必须重新构建并替换设备上的 .ko。
+set -e
+
+KERNEL_ROOT="/home/wcoom/桌面/oplus13/android_kernel_common_oneplus_sm8750"
+KO_DIR="$(cd "$(dirname "$0")/../kernel" && pwd)"
+OUT="$KERNEL_ROOT/out"
+
+export PATH="/home/wcoom/桌面/oplus13/clang-19/bin:$PATH"
+export KBUILD_BUILD_TIMESTAMP="Mon May 12 09:09:59 UTC 2025"
+
+[ -f "$OUT/.config" ] || { echo "缺少 $OUT/.config（先在 $KERNEL_ROOT 跑 内核构建.sh）"; exit 1; }
+[ -f "$OUT/Module.symvers" ] || { echo "缺少 $OUT/Module.symvers（构建树不完整）"; exit 1; }
+
+LOG="$KO_DIR/.build.log"
+cd "$KERNEL_ROOT"
+# 必须带上与 内核构建.sh **完全相同**的 CUSTOM_FLAGS，尤其是 -Wno-error：
+# 本树 include/linux/signal.h 的 _SIG_SET_BINOP 在 _NSIG_WORDS==1 下仍被
+# clang 做死代码分析并报 -Warray-bounds（sig[2]/sig[3] 越界），主构建正是
+# 靠 -Wno-error 压住的。树外模块若不带同一套旗标，编出来的就不是同一棵树
+# 的语义。代价是本模块自身的告警也会被降级 —— 因此下面单独 grep 本目录
+# 的告警，把严格性补回来。
+make LLVM=1 \
+     ARCH=arm64 \
+     CROSS_COMPILE=aarch64-linux-gnu- \
+     PAHOLE=/usr/bin/pahole \
+     LD=ld.lld \
+     HOSTLD=ld.lld \
+     O=out \
+     CONFIG_MODULE_SIG_ALL= \
+     KCFLAGS+="-O2 -mcpu=oryon-1 -Wno-error -pipe" \
+     M="$KO_DIR" \
+     modules 2>&1 | tee "$LOG"
+
+echo "--- 本模块自身的告警审计（-Wno-error 会掩盖它们）---"
+OWN_WARN=$(grep -E "^(kernel/)?kdg_[a-z]+\.c:" "$LOG" | grep -E "warning:" || true)
+if [ -n "$OWN_WARN" ]; then
+	echo "$OWN_WARN"
+	echo "（以上为本项目新增代码的告警，请逐条确认）"
+else
+	echo "无"
+fi
+
+echo "--- 未定义符号审计（本模块不允许任何未定义符号）---"
+UNEXPECTED=$(grep -o '"[^"]*" \[.*\.ko\] undefined!' "$LOG" \
+	     | sed 's/"\([^"]*\)".*/\1/' | sort -u || true)
+if [ -n "$UNEXPECTED" ]; then
+	echo "构建失败：出现未定义符号（应全部在 Module.symvers 中）："
+	echo "$UNEXPECTED"
+	exit 1
+fi
+
+echo "========================================"
+ls -la "$KO_DIR"/kdnsguard.ko
+echo "--- vermagic（必须与设备 uname -r 一致）---"
+modinfo -F vermagic "$KO_DIR"/kdnsguard.ko 2>/dev/null | head -1
+echo "--- out/ 的 UTS_RELEASE ---"
+grep UTS_RELEASE "$OUT/include/generated/utsrelease.h"
+echo "--- 签名检查（应无输出）---"
+tail -c 512 "$KO_DIR"/kdnsguard.ko | strings | grep "Module signature" || echo "未签名 OK"
+echo "--- 未解析符号（正常：模块的未定义符号由内核在 insmod 时按导出表解析）---"
+nm "$KO_DIR"/kdnsguard.ko 2>/dev/null | grep " U " || echo "无"
+echo "--- 逐个核对上述符号都在 out/Module.symvers 中（modpost 已保证，此处留证）---"
+MISSING=""
+for s in $(nm "$KO_DIR"/kdnsguard.ko 2>/dev/null | awk '$1=="U"{print $2}'); do
+	grep -qP "\t$s\t" "$OUT/Module.symvers" || MISSING="$MISSING $s"
+done
+if [ -n "$MISSING" ]; then
+	echo "构建失败：以下符号不在本内核导出表中：$MISSING"
+	exit 1
+fi
+echo "全部合规"
+echo "========================================"
