@@ -85,4 +85,7 @@ u32 kdg_nat_capability_bits(void);
 int kdg_genl_init(void);
 void kdg_genl_exit(void);
 
+/* kdg_mbedtls.c —— mbedTLS 平台适配层 */
+int kdg_mbedtls_init(void);
+
 #endif /* _KDG_H */

@@ -24,6 +24,31 @@ export KBUILD_BUILD_TIMESTAMP="Mon May 12 09:09:59 UTC 2025"
 [ -f "$OUT/.config" ] || { echo "缺少 $OUT/.config（先在 $KERNEL_ROOT 跑 内核构建.sh）"; exit 1; }
 [ -f "$OUT/Module.symvers" ] || { echo "缺少 $OUT/Module.symvers（构建树不完整）"; exit 1; }
 
+# ── 同步 mbedTLS 到生成目录 ────────────────────────────────────────────
+# kbuild 树外模块的编译规则是 $(obj)/%.o: $(src)/%.c，源文件必须物理位于
+# 模块目录内。用目录符号链接会把编译产物写进上游树、破坏「third_party 逐字节
+# 等于上游」这条纪律，故改为显式同步。
+#
+# 用内容哈希做判据而不是时间戳：一是确定性强，二是上游换版本时能自动清理
+# 掉已删除的文件（否则会留下幽灵 .c 参与编译）。
+PROJ_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+MBSRC="$PROJ_ROOT/third_party/mbedtls/library"
+MBDST="$PROJ_ROOT/kernel/mbedtls"
+
+VENDOR_HASH=$(find "$MBSRC" -maxdepth 1 \( -name '*.c' -o -name '*.h' \) -print0 \
+	      | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
+STAMP="$MBDST/.vendor-hash"
+
+if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$VENDOR_HASH" ]; then
+	echo "同步 mbedTLS 源码到 $MBDST （vendor hash $VENDOR_HASH）"
+	find "$MBDST" -maxdepth 1 \( -name '*.c' -o -name '*.h' -o -name '*.o' \) -delete
+	cp -a "$MBSRC"/*.c "$MBSRC"/*.h "$MBDST"/
+	echo "$VENDOR_HASH" > "$STAMP"
+	echo "  已同步 $(ls "$MBDST"/*.c | wc -l) 个 .c 文件"
+else
+	echo "mbedTLS 源码已是最新（vendor hash $VENDOR_HASH）"
+fi
+
 LOG="$KO_DIR/.build.log"
 cd "$KERNEL_ROOT"
 # 必须带上与 内核构建.sh **完全相同**的 CUSTOM_FLAGS，尤其是 -Wno-error：

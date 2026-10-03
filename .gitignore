@@ -14,3 +14,6 @@ tools/kdgctl
 # 构建日志与生成的清单
 *.log
 third_party/manifest.txt
+
+# mbedTLS 生成目录：整体由 tools/build.sh 从 third_party/ 同步而来，不入库。
+kernel/mbedtls/

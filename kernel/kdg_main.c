@@ -123,7 +123,18 @@ static int __init kdg_init(void)
 	WRITE_ONCE(kdg_cfg.listen_port, (u16)kdg_listen_port);
 	WRITE_ONCE(kdg_cfg.default_deadline_ms, (u32)kdg_deadline_ms);
 
-	/* 先注册管理面，再挂 NAT hook：这样任何时刻用户空间看到的都是一个
+	/*
+	 * 平台层必须最先就绪：MBEDTLS_PLATFORM_NO_STD_FUNCTIONS 下
+	 * mbedTLS 的 calloc/free/snprintf/time 函数指针初值为 NULL，
+	 * 任何早于本调用的 mbedTLS 入口都是空指针解引用。
+	 */
+	ret = kdg_mbedtls_init();
+	if (ret) {
+		pr_err("mbedTLS 平台层初始化失败: %d\n", ret);
+		return ret;
+	}
+
+	/* 再注册管理面，最后挂 NAT hook：这样任何时刻用户空间看到的都是一个
 	 * 能被查询的状态，而不是「NAT 已经在拦包但没人能问它在干什么」。 */
 	ret = kdg_genl_init();
 	if (ret) {
