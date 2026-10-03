@@ -1,0 +1,12 @@
+# 宿主测试产物
+tests/build/
+# 内核模块构建产物
+kernel/*.o
+kernel/*.ko
+kernel/*.mod
+kernel/*.mod.c
+kernel/.tmp_versions/
+kernel/Module.symvers
+kernel/modules.order
+kernel/.*.cmd
+*.log

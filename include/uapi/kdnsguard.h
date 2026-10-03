@@ -1,0 +1,206 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * kdnsguard UAPI v1 —— 全内核 DNS 接管项目的用户空间接口。
+ *
+ * 设计纪律（对应方案 §14）：
+ *  1. 这是**拟新增** UAPI，不是现有系统调用。落进内核 include/uapi 前，
+ *     结构、字节序与兼容规则必须在本文件内冻结。
+ *  2. 所有多字节字段为主机字节序（内核本地 ABI 惯例），宽度用固定类型，
+ *     不用 __attribute__((packed))：ARM64 上非对齐访问有代价，改用**显式
+ *     保留字段**把结构体钉成确定布局（每次加字段只能加在尾部保留区）。
+ *  3. 上游路径含账户标识。stats 与普通日志**不得**输出完整 URI 或查询域名。
+ *  4. 查询面（字符设备）与管理面（Generic Netlink）分离：管理面不承载
+ *     高频 DNS 正文。
+ */
+#ifndef _UAPI_KDNSGUARD_H
+#define _UAPI_KDNSGUARD_H
+
+#ifdef __KERNEL__
+#include <linux/types.h>
+#else
+#include <linux/types.h>	/* 宿主态由 tests/Makefile 提供替身头 */
+#endif
+
+/* ── ABI 版本 ────────────────────────────────────────────────────────────
+ * 任何结构布局或语义变更都必须递增，且内核侧对未知版本一律显式拒绝
+ * （KDG_ST_EABI），不做尽力而为的解析。
+ */
+#define KDG_ABI_VERSION		1
+
+/* ── 通用上限 ────────────────────────────────────────────────────────────
+ * KDG_MAX_WIRE_MSG 是首版单条 DNS 报文的硬上限。TCP 上 DNS 理论可达
+ * 65535，但首版字符设备接口按方案 §14.2「不做共享内存 mmap 环形队列」，
+ * 走 write/read 拷贝，4096 是一次 syscall 的合理界；超出返回
+ * KDG_ST_EMSGSIZE 而不是截断。
+ */
+#define KDG_MAX_WIRE_MSG	4096
+/* 查询面字符串（如 profile hostname / path）的最大字节数，含结尾 NUL。 */
+#define KDG_MAX_TEXT		256
+
+/* ── 管理面：Generic Netlink ──────────────────────────────────────────── */
+#define KDG_GENL_NAME		"KDNSGUARD"
+#define KDG_GENL_VERSION	1
+
+enum kdg_genl_cmd {
+	KDG_CMD_UNSPEC,
+	KDG_CMD_CAPS,			/* 能力位：H1/H2/H3、双栈、映射、限额 */
+	KDG_CMD_PREPARE_PROFILE,	/* 建立候选 profile，**不**抢占现有流量 */
+	KDG_CMD_COMMIT_PROFILE,		/* 原子切换；旧在途按旧 generation 完成 */
+	KDG_CMD_SET_NETWORK,		/* netId/iface/经验证路由信息/epoch */
+	KDG_CMD_SET_PRIVATE_DNS_STATE,	/* 平台状态桥；不假报验证成功 */
+	KDG_CMD_ENABLE_INTERCEPT,	/* 按 readiness 与所有权 generation 接管 */
+	KDG_CMD_DISABLE_INTERCEPT,	/* 故障关闭或明确恢复原链路 */
+	KDG_CMD_FLUSH_CACHE,
+	KDG_CMD_RESET_TRANSPORT,
+	KDG_CMD_GET_STATS,
+	KDG_CMD_GET_HEALTH,
+	__KDG_CMD_MAX,
+};
+#define KDG_CMD_MAX (__KDG_CMD_MAX - 1)
+
+enum kdg_genl_attr {
+	KDG_A_UNSPEC,
+	KDG_A_ABI_VERSION,		/* u16 */
+	KDG_A_TRANSACTION_ID,		/* u64 */
+	KDG_A_EXPECTED_GENERATION,	/* u32 */
+	KDG_A_GENERATION,		/* u32 —— 输出 */
+	KDG_A_NETID,			/* u32 */
+	KDG_A_IFINDEX,			/* u32 */
+	KDG_A_EPOCH,			/* u64 —— 网络 epoch，切换即变 */
+	KDG_A_NETWORK_HANDLE,		/* u32 —— 内核签发的网络句柄 */
+	KDG_A_CAPABILITY_BITS,		/* u32 —— CAPS 输出 */
+	KDG_A_HOSTNAME,			/* NUL 结尾，≤ KDG_MAX_TEXT */
+	KDG_A_PATH,			/* NUL 结尾，≤ KDG_MAX_TEXT */
+	KDG_A_BOOTSTRAP_IP,		/* 4 或 16 字节裸地址 */
+	KDG_A_TRUST_MATERIAL,		/* DER 或 PEM 的信任锚 */
+	KDG_A_PRIVATE_DNS_MODE,		/* u8：见 enum kdg_private_dns_mode */
+	KDG_A_READINESS,		/* u8：0=未就绪 1=就绪 */
+	KDG_A_STATS,			/* 嵌套：见 kdg_stats_v1 */
+	KDG_A_HEALTH,			/* 嵌套：见 kdg_health_v1 */
+	KDG_A_ERRNO,			/* s32 —— 明确 errno，不用字符串 */
+	__KDG_A_MAX,
+};
+#define KDG_A_MAX (__KDG_A_MAX - 1)
+
+/* CAPS 能力位。未置位即表示**不支持**，调用方不得据此推断可用。 */
+#define KDG_CAP_IPV4			(1U << 0)
+#define KDG_CAP_IPV6			(1U << 1)
+#define KDG_CAP_UDP53			(1U << 2)
+#define KDG_CAP_TCP53			(1U << 3)
+#define KDG_CAP_DOH_H1			(1U << 4)
+#define KDG_CAP_DOH_H2			(1U << 5)
+#define KDG_CAP_DOH_H3			(1U << 6)	/* 实验；验收前恒为 0 */
+#define KDG_CAP_DOMAIN_MAP		(1U << 7)
+#define KDG_CAP_NEG_CACHE		(1U << 8)
+#define KDG_CAP_FAKEIP			(1U << 9)	/* 首期恒为 0 */
+
+/* 对应 Android Settings 的 private_dns_mode。内核**不**自行推断语义，
+ * 只如实上报，避免方案 §10.1 禁止的「设置页报 strict 成功却查了别的账户」。 */
+enum kdg_private_dns_mode {
+	KDG_PDNS_OFF		= 0,
+	KDG_PDNS_AUTOMATIC	= 1,
+	KDG_PDNS_STRICT		= 2,
+	KDG_PDNS_UNKNOWN	= 255,
+};
+
+/* 内核向系统桥报告的所有权状态。§10.1 要求把「已由内核策略接管」显式
+ * 反映出去，而不是把 off 当成允许明文泄漏。 */
+enum kdg_ownership {
+	KDG_OWN_NONE		= 0,	/* 未接管，原链路在工作 */
+	KDG_OWN_PREPARED	= 1,	/* 资源已备，尚未切换 */
+	KDG_OWN_ACTIVE		= 2,	/* 本项目持有 53 所有权 */
+	KDG_OWN_DEGRADED	= 3,	/* 接管中但上游不健康，严格模式返回错误 */
+};
+
+struct kdg_stats_v1 {
+	__u64 queries_total;
+	__u64 cache_hits;
+	__u64 inflight_joined;		/* 同名合并命中次数 */
+	__u64 upstream_queries;
+	__u64 upstream_failures;
+	__u64 retries;
+	__u64 dropped_quota;		/* 因配额拒绝 */
+	__u64 mem_bytes;		/* 当前动态内存占用 */
+	__u32 inflight_current;
+	__u32 cache_entries;
+	__u32 latency_p50_us;
+	__u32 latency_p95_us;
+	__u32 generation;
+	__u32 reserved0;		/* 保留：显式对齐，不可复用直至 ABI 递增 */
+};
+
+struct kdg_health_v1 {
+	__u32 generation;
+	__u32 ownership;		/* enum kdg_ownership */
+	__u32 upstream_ok;		/* 最近一次验证是否成功 */
+	__u32 consecutive_failures;
+	__u32 backoff_until_ms;		/* 0 表示未退避 */
+	__u32 last_errno;		/* 最近失败 errno，0 表示无 */
+	__u32 reserved0[6];
+};
+
+/* ── 查询面：受控字符设备 /dev/kdnsguard ──────────────────────────────── */
+#define KDG_DEVICE_NAME		"kdnsguard"
+
+enum kdg_ioctl_op {
+	KDG_OP_QUERY		= 0,
+	KDG_OP_CANCEL		= 1,
+	KDG_OP_MAP_LOOKUP	= 2,
+	KDG_OP_GET_HEALTH	= 3,
+	__KDG_OP_MAX,
+};
+
+/* 响应状态。负值区间留给 errno 直通，正值区间是协议自有状态。 */
+enum kdg_status {
+	KDG_ST_OK		= 0,
+	KDG_ST_EABI		= 1,	/* abi_version 不认识 */
+	KDG_ST_EOP		= 2,	/* opcode 不认识 */
+	KDG_ST_EMSGSIZE		= 3,	/* 长度越界或溢出 */
+	KDG_ST_ECOOKIE		= 4,	/* cookie 重复或不属于本上下文 */
+	KDG_ST_EGENERATION	= 5,	/* expected_generation 过旧 */
+	KDG_ST_EPERM		= 6,	/* 调用方无权使用该 network */
+	KDG_ST_ECANCELED	= 7,
+	KDG_ST_ETIMEDOUT	= 8,
+	KDG_ST_EBADWIRE		= 9,	/* 内核侧 DNS wire 校验失败 */
+	KDG_ST_EAGAIN		= 10,	/* 全局队列满，有界拒绝 */
+	KDG_ST_EUPSTREAM	= 11,	/* 上游不可达（严格模式不回落） */
+};
+
+/* 请求头。query_wire 紧随其后，长度 query_len，按 8 字节对齐补齐。
+ * 用 Q_ 后缀强调这是「请求描述」而非完整的领域模型。 */
+struct kdg_req_v1 {
+	__u16 abi_version;		/* 必须 == KDG_ABI_VERSION */
+	__u16 opcode;			/* enum kdg_ioctl_op */
+	__u32 total_len;		/* 本次 write 的总字节数（含本头） */
+	__u64 request_cookie;		/* 调用方自选，回包原样带回 */
+	__u32 expected_generation;	/* 旧 generation 显式拒绝 */
+	__u32 requested_network_handle;	/* 0 = 用调用方默认网络 */
+	__u32 deadline_ms;		/* 0 = 用内核默认 3000 */
+	__u32 query_len;		/* query_wire 字节数 */
+	__u32 flags;
+	__u32 reserved0;		/* 显式对齐，置 0 */
+};
+
+struct kdg_resp_v1 {
+	__u16 abi_version;
+	__u16 status;			/* enum kdg_status */
+	__u32 errno_hint;		/* status 的负 errno 直通，便于调用方映射 */
+	__u64 request_cookie;
+	__u32 actual_network;		/* 实际使用的 network handle */
+	__u32 generation;		/* 回包时的 generation */
+	__u32 response_len;
+	__u32 reserved0;
+	/* response_wire 紧随其后，长度 response_len，按 8 字节对齐补齐。 */
+};
+
+/* 调用方凭据决定可用 network。内核**不**信任请求里自报的 UID —— 见方案
+ * §7.2 与 §14.2。requested_network_handle 只是一个「申请」，内核按
+ * caller 的 Android 网络权限裁决，不满足返回 KDG_ST_EPERM。 */
+#define KDG_REQ_FLAG_WANT_NEG_CACHE	(1U << 0)
+#define KDG_REQ_FLAG_NO_SHARE		(1U << 1)	/* 禁止在途合并 */
+#define KDG_REQ_FLAG_RAW_ID		(1U << 2)	/* 保留调用方 DNS ID，不规范化 */
+#define KDG_REQ_FLAG_MASK		(KDG_REQ_FLAG_WANT_NEG_CACHE | \
+					 KDG_REQ_FLAG_NO_SHARE | \
+					 KDG_REQ_FLAG_RAW_ID)
+
+#endif /* _UAPI_KDNSGUARD_H */
