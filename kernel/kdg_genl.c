@@ -246,6 +246,19 @@ static int kdg_genl_set_trust(struct sk_buff *skb, struct genl_info *info)
 	if (len == 0)
 		return -EINVAL;
 
+	/* 受 debug 参数控制的首字节转储。曾用来定位「工具缓冲区越界导致
+	 * PEM 被污染」——内核侧只看到 INVALID_FORMAT，看原始字节两分钟定位。 */
+	if (unlikely(READ_ONCE(kdg_debug))) {
+		const u8 *p = data;
+
+		pr_info("信任锚入参 %zu 字节，首 24: %02x %02x %02x %02x %02x %02x %02x %02x"
+			" %02x %02x %02x %02x %02x %02x %02x %02x"
+			" %02x %02x %02x %02x %02x %02x %02x %02x\n",
+			len, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
+			p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15],
+			p[16], p[17], p[18], p[19], p[20], p[21], p[22], p[23]);
+	}
+
 	added = kdg_tls_add_ca(data, len);
 	if (added < 0) {
 		pr_warn("信任锚加载失败: %d\n", added);

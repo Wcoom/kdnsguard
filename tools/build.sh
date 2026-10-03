@@ -13,6 +13,10 @@
 #     本模块只用 Module.symvers 里有的导出符号，未定义符号一律视为错误；
 #  3) 每次重刷内核后 vermagic/CRC 都会变，必须重新构建并替换设备上的 .ko。
 set -e
+# 让 `make ... | tee` 的失败被 set -e 捕获：默认管道的退出码是 tee 的（恒为 0），
+# 于是构建失败会被静默吞掉、脚本继续往下走并打印「全部合规」。
+# 这个坑实际发生过一次 —— 我据此误以为改动生效，实际跑的是上一次的 .ko。
+set -o pipefail
 
 KERNEL_ROOT="/home/wcoom/桌面/oplus13/android_kernel_common_oneplus_sm8750"
 KO_DIR="$(cd "$(dirname "$0")/../kernel" && pwd)"

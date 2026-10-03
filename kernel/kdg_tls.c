@@ -10,7 +10,11 @@
 #include <linux/string.h>
 #include <linux/errno.h>
 
+#include "kdg.h"
 #include "kdg_tls.h"
+/* mbedtls_debug_set_threshold 在 debug.h，ssl.h 不转发它。 */
+#include <mbedtls/debug.h>
+#include <psa/crypto.h>
 
 /* ── 模块级共享状态 ──────────────────────────────────────────────────── */
 
@@ -104,6 +108,9 @@ int kdg_tls_global_init(void)
 		return -EIO;
 	}
 
+	if (READ_ONCE(kdg_debug))
+		kdg_psa_probe();
+
 	kdg_tls_ready = true;
 	pr_info("TLS 子系统就绪（CTR_DRBG 已播种，信任锚 %u 张）\n",
 		kdg_tls_ca_count());
@@ -127,6 +134,7 @@ void kdg_tls_global_exit(void)
 int kdg_tls_add_ca(const u8 *data, size_t len)
 {
 	unsigned int before, after;
+	u8 *buf;
 	int ret;
 
 	if (!data || len == 0)
@@ -134,13 +142,31 @@ int kdg_tls_add_ca(const u8 *data, size_t len)
 	if (!kdg_ca_created)
 		return -EAGAIN;
 
+	/*
+	 * ⚠️ 必须补 NUL 并补进长度。
+	 *
+	 * mbedTLS 判定 PEM 的前提是**缓冲区最后一个字节为 '\0'**：
+	 *   x509_crt.c: `buf[buflen - 1] == '\0' && strstr(buf, "-----BEGIN ...")`
+	 *   pem.c:      `strstr()` 定位首尾标记
+	 * 否则它按 DER 解析。而 netlink 属性载荷是按长度传递的**非 NUL 结尾
+	 * 二进制**，直接传进去会被当成 DER → MBEDTLS_ERR_X509_INVALID_FORMAT。
+	 *
+	 * 长度传 len + 1（而不是 len）：要让 buf[buflen-1] 恰好是那个 NUL。
+	 */
+	buf = kmalloc(len + 1, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	memcpy(buf, data, len);
+	buf[len] = '\0';
+
 	/* mbedtls_x509_crt_parse 会把 PEM 里**所有**证书追加进链，返回 0
 	 * 表示全部成功；返回正数表示有 N 张解析失败但仍追加了其余部分 ——
 	 * 后者必须当成失败处理：带着残缺的信任锚去握手，等于把安全性
 	 * 建立在「恰好没被解析到的那张不是关键」这个没有根据的假设上。 */
 	before = kdg_tls_ca_count();
-	ret = mbedtls_x509_crt_parse(&kdg_ca, data, len);
+	ret = mbedtls_x509_crt_parse(&kdg_ca, buf, len + 1);
 	after = kdg_tls_ca_count();
+	kfree(buf);
 
 	if (ret != 0) {
 		pr_err("信任锚解析有失败项（%d 张），拒绝本次加载\n",
@@ -163,8 +189,17 @@ unsigned int kdg_tls_ca_count(void)
 	if (!kdg_ca_created)
 		return 0;
 
-	for (c = &kdg_ca; c != NULL; c = c->next)
-		n++;
+	/*
+	 * 只数**真正解析出来的证书**。kdg_ca 本身是链表头节点，即使一张证书
+	 * 都没有它也存在（mbedtls_x509_crt_init 会清零并置 next=NULL），
+	 * 所以不能简单数节点个数 —— 那会让空链返回 1，使 kdg_doh_query() 里
+	 * 「信任锚为空即拒绝」的判断失效，白白发起一次注定失败的握手。
+	 * 判据用 raw.len：解析成功的证书必然有原文。
+	 */
+	for (c = &kdg_ca; c != NULL; c = c->next) {
+		if (c->raw.len > 0)
+			n++;
+	}
 
 	return n;
 }
@@ -176,6 +211,19 @@ void kdg_tls_clear_ca(void)
 
 	mbedtls_x509_crt_free(&kdg_ca);
 	mbedtls_x509_crt_init(&kdg_ca);
+}
+
+/*
+ * mbedTLS 调试回调。仅在 kdg_debug=1 时挂上。
+ *
+ * mbedTLS 的调试文本会包含握手消息摘要，但不含完整 URI 或查询域名，
+ * 且默认关闭 —— 符合方案 §14.1 的输出纪律。
+ */
+static void kdg_tls_debug(void *ctx, int level, const char *file, int line,
+			  const char *str)
+{
+	(void)ctx;
+	pr_info("mbedtls[%d] %s:%d: %s", level, file, line, str);
 }
 
 /* ── 会话 ────────────────────────────────────────────────────────────── */
@@ -223,8 +271,21 @@ int kdg_tls_session_open(struct kdg_tls *t, struct kdg_sock *sock,
 	/* 证书验证绝不关闭（方案 §6.2 的硬性要求）。 */
 	mbedtls_ssl_conf_authmode(&t->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
 
-	/* 首版只走 TLS 1.2 及以上；1.2 保留是为了互操作，不是降级默认。 */
+	/*
+	 * ⚠️ 临时限制到 TLS 1.2。理由与待办见 docs/P1-tls13-psa-issue.md：
+	 * 本内核上 mbedTLS 3.6.7 的 TLS 1.3 在生成 ECDHE 密钥份额时，
+	 * psa_export_public_key() 会**非确定性**地返回 PSA_ERROR_INVALID_ARGUMENT
+	 * （同一输入时好时坏，仅 P-384 稳定成功），属移植层问题、尚未定位。
+	 * 方案 §6.2 明确允许保留 TLS 1.2 互操作路径，故先以 1.2 打通全链路，
+	 * 把 TLS 1.3 作为独立待办跟踪。
+	 */
 	mbedtls_ssl_conf_min_tls_version(&t->conf, MBEDTLS_SSL_VERSION_TLS1_2);
+	mbedtls_ssl_conf_max_tls_version(&t->conf, MBEDTLS_SSL_VERSION_TLS1_2);
+
+	if (READ_ONCE(kdg_debug)) {
+		mbedtls_debug_set_threshold(4);
+		mbedtls_ssl_conf_dbg(&t->conf, kdg_tls_debug, NULL);
+	}
 
 	mbedtls_ssl_conf_rng(&t->conf, mbedtls_ctr_drbg_random, &kdg_ctr_drbg);
 	mbedtls_ssl_conf_ca_chain(&t->conf, &kdg_ca, NULL);

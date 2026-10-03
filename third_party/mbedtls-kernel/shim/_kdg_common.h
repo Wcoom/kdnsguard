@@ -61,19 +61,12 @@
 #undef ULONG_MAX
 #define ULONG_MAX	(~0UL)
 
-#undef SHRT_MAX
-#define SHRT_MAX	32767
-#undef SHRT_MIN
-#define SHRT_MIN	(-32768)
-
-#undef USHRT_MAX
-#define USHRT_MAX	65535U
-
-#undef CHAR_MAX
-#define CHAR_MAX	127
-#undef CHAR_MIN
-#define CHAR_MIN	(-128)
-
-#undef UCHAR_MAX
-#define UCHAR_MAX	255U
+/*
+ * ⚠️ 不再重定义 CHAR_MIN/CHAR_MAX/UCHAR_MAX/SHRT_MAX 等。
+ *
+ * 曾经它们也在重定义之列，其中 CHAR_MIN 被我写成 -128 —— 而 **ARM64 上
+ * char 默认是无符号的**，正确值是 0。这是「顺手把一组合并处理」引入的
+ * 错误：真正需要重定义的只有内核用 **C 表达式**（如 SIZE_MAX = (~(size_t)0)）
+ * 定义、因而无法出现在 #if 里的那几个；其余保留内核的即可。
+ */
 

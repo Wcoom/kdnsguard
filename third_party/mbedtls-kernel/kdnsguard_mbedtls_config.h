@@ -86,6 +86,10 @@
  * 正确性验证由 tests/ 下的宿主侧语料测试承担。 */
 #undef MBEDTLS_SELF_TEST
 
+/* 注：曾实验性关闭 MBEDTLS_ECP_NIST_OPTIM / MBEDTLS_ECP_FIXED_POINT_OPTIM，
+ * 用以判断 P-256 失败是否源于优化路径的预计算表 —— **实测结果完全不变**，
+ * 故已撤销该偏离。失败在更下层（群参数校验），见 docs/P1-ecp-blocker.md。 */
+
 /* ── 4. 内核态必需的平台抽象 ──────────────────────────────────────────── */
 
 /* PLATFORM_C 是这一整套注入机制的总开关。 */

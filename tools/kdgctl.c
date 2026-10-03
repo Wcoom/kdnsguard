@@ -174,14 +174,29 @@ struct sockaddr_nl {
 #define CTRL_ATTR_VERSION_	3
 #define CTRL_ATTR_OPS_		8
 
-static u8 txbuf[1024];
+/*
+ * 缓冲区必须容纳最大的 TRUST_MATERIAL（内核策略上限 16 KiB）加上报文头。
+ * ⚠️ 这里曾写成 1024 字节，而一次 1598 字节的 PEM 就直接越界写 BSS ——
+ * 表现为内核侧 PEM 解析失败（MBEDTLS_ERR_X509_INVALID_FORMAT），
+ * 看起来像内核 bug 而实际是工具自己坏了。attr_put() 现在做边界检查，
+ * 越界会明确报错而不是静默截断。
+ */
+static u8 txbuf[16 * 1024 + 512];
 static u8 rxbuf[8192];
+
+/* 溢出标志：attr_put 越界时置位，调用方据此放弃本次请求。 */
+static int g_attr_overflow;
 
 static void attr_put(u16 type, const void *data, usize len)
 {
 	usize off = ((struct nlmsghdr *)txbuf)->nlmsg_len;
-	struct nlattr *a = (struct nlattr *)(txbuf + off);
+	struct nlattr *a;
 
+	if (off + NLA_ALIGN4(NLA_HDRLEN + len) > sizeof(txbuf)) {
+		g_attr_overflow = 1;
+		return;
+	}
+	a = (struct nlattr *)(txbuf + off);
 	a->nla_type = type;
 	a->nla_len = (u16)(NLA_HDRLEN + len);
 	if (len) {
@@ -395,13 +410,22 @@ static long sys4(long n, long a, long b, long c, long d)
 	return x0;
 }
 
-static void get_args(long *argc, char ***argv)
+/*
+ * ⚠️ 入口必须是 naked。
+ *
+ * 常规函数的序言（stp x29,x30,[sp,#-N]!）会在函数体执行**之前**就调整 sp，
+ * 因此在普通函数里内联汇编读 sp 拿到的是该函数自己的栈帧，而不是进程的
+ * 初始栈 —— 实测表现为 argc 恒为 0，子命令全被忽略、静默走默认路径。
+ * __attribute__((naked)) 抑制序言生成，第一条指令即我们自己的汇编。
+ *
+ * 用 b（而非 bl）跳转：kdg_entry 以 exit() 收尾、永不返回，
+ * 无需保存 x30（进程启动时它本就是未定义的）。
+ */
+__attribute__((naked)) void _start(void)
 {
-	long *sp;
-
-	__asm__ volatile("mov %0, sp" : "=r"(sp));
-	*argc = sp[0];
-	*argv = (char **)(sp + 1);
+	__asm__ volatile(
+		"mov x0, sp\n"
+		"b   kdg_entry\n");
 }
 
 static int str_eq(const char *a, const char *b)
@@ -422,6 +446,9 @@ static int str_eq(const char *a, const char *b)
 #define SYS_openat	56
 #define AT_FDCWD_	(-100)
 #define O_RDONLY_	0
+/* 字符设备必须 O_RDWR：同一个 fd 上既 write（提交查询）又 read（取回响应）。
+ * 曾写成 O_RDONLY，write 直接返回 EBADF。 */
+#define O_RDWR_		2
 
 static int read_file(const char *path, u8 *buf, usize cap, usize *outlen)
 {
@@ -527,7 +554,12 @@ static int cmd_trust(u16 fam, const char *path)
 	gh->cmd = KDG_CMD_SET_TRUST;
 	gh->version = KDG_GENL_VERSION;
 	gh->reserved = 0;
+	g_attr_overflow = 0;
 	attr_put(KDG_A_TRUST_MATERIAL, file, flen);
+	if (g_attr_overflow) {
+		puts_("内部错误：信任锚超出发送缓冲上限\n");
+		return 1;
+	}
 
 	puts_("提交信任锚 ");
 	putnum(flen);
@@ -593,7 +625,7 @@ static int cmd_query(const char *name)
 	req->deadline_ms = 5000;
 	req->query_len = (u32)qlen;
 
-	fd = sys4(SYS_openat, AT_FDCWD_, (long)"/dev/kdnsguard", O_RDONLY_, 0);
+	fd = sys4(SYS_openat, AT_FDCWD_, (long)"/dev/kdnsguard", O_RDWR_, 0);
 	if (fd < 0) {
 		puts_("打开 /dev/kdnsguard 失败（errno ");
 		putnum((u64)(-fd));
@@ -698,15 +730,13 @@ static int cmd_query(const char *name)
 	return 0;
 }
 
-void _start(void)
+void kdg_entry(long *sp)
 {
-	long argc;
-	char **argv;
+	long argc = sp[0];
+	char **argv = (char **)&sp[1];
 	u16 version = 0;
 	u16 fam;
 	long n;
-
-	get_args(&argc, &argv);
 
 	fam = resolve_family(&version);
 	if (!fam) {
