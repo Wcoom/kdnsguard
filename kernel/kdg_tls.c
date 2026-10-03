@@ -229,16 +229,20 @@ static void kdg_tls_debug(void *ctx, int level, const char *file, int line,
 /* ── 会话 ────────────────────────────────────────────────────────────── */
 
 /*
- * ALPN 列表。**本阶段只提供 http/1.1** —— 理由见 kdg_tls.h 文件头：
- * H2 客户端尚未移植，此刻宣告 h2 会让服务端选中它，而我们无法构造
- * 合法的 HTTP/2 帧，得到的是一条「看似连上、实则不可用」的连接。
- * P2 的 H2 就绪后在此加入 "h2"（放在 http/1.1 之前，因为列表有序）。
+ * ALPN 列表。**h2 在前** —— 列表有序，服务端按自己的偏好从中挑。
+ *
+ * 早先刻意只提供 http/1.1：那时 H2 客户端还没移植，宣告 h2 会让服务端选中
+ * 它、而我们构造不出合法的 HTTP/2 帧，得到的是一条「看似连上、实则不可用」
+ * 的连接。现在 nghttp2 已编入模块，可以如实宣告。
+ * 方案 §6.3 说 H2 是主线目标、§6.4 说 H1 是兼容路径，两者并存，
+ * 由协商结果决定实际走哪条（见 kdg_doh.c 的传输选择）。
  *
  * mbedTLS 只保存指针，故必须是静态生存期。
  */
 /* 类型必须是 `const char *[]`：mbedtls_ssl_conf_alpn_protocols() 的形参是
  * `const char **`，写成 `const char *const[]` 会因丢弃顶层 const 而编译失败。 */
 static const char *kdg_alpn_protos[] = {
+	"h2",
 	"http/1.1",
 	NULL,
 };

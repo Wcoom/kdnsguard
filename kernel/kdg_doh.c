@@ -14,6 +14,7 @@
 #include "kdg.h"
 #include "kdg_doh.h"
 #include "kdg_http.h"
+#include "kdg_h2.h"
 
 /* KDG_DOH_REQ_MAX / KDG_DOH_RX_MAX 见 kdg_doh.h —— 编排层也在用。
  * 接收缓冲之所以要这么大：方案 §7.4 要求这类大缓冲走有界堆分配、
@@ -265,6 +266,35 @@ int kdg_doh_query(const struct kdg_doh_cfg *cfg,
 		goto out;
 	}
 
+	/*
+	 * 传输选择：按 ALPN 协商结果在 H2 与 H1 之间选（方案 §6.3/§6.4）。
+	 * H2 是主线目标，H1 是兼容路径 —— 服务端不支持 h2 时自动回落，
+	 * 不需要额外探测：ALPN 没协商出 h2 就说明它只支持 1.1。
+	 */
+	{
+		const char *alpn = kdg_tls_alpn(&tls);
+
+	/* ALPN 未协商出任何协议时 kdg_tls_alpn 返回 NULL —— 直接 strcmp 会崩。
+	 * 此时按 H1 处理是安全默认：H1 不需要 ALPN 协商即可工作。 */
+	if (alpn && strcmp(alpn, "h2") == 0) {
+		size_t hl = *rlen;
+
+		ret = kdg_h2_doh_request(&tls, cfg->hostname, cfg->path,
+					 qwire, qlen, rwire, hl, &hl);
+		if (ret) {
+			st->http_fail++;
+			st->last_errno = (u32)ret;
+			goto out;
+		}
+		*rlen = hl;
+		st->ok++;
+		st->last_errno = 0;
+		st->last_http_status = 200;
+		goto out;
+	}
+	}
+
+	/* H1 兼容路径 */
 	ret = kdg_tls_write(&tls, tx, txlen);
 	if (ret) {
 		st->net_fail++;

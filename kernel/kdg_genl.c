@@ -25,6 +25,7 @@
 #include "kdg_resolve.h"
 #include "kdg_sflight.h"
 #include "kdg_quota.h"
+#include "kdg_h2.h"
 
 /* 骨架阶段的安全闸：即使有人拿到 CAP_NET_ADMIN 并调用 ENABLE_INTERCEPT，
  * 只要模块不是以 allow_intercept=1 加载的，就拒绝启用。理由是本阶段
@@ -138,7 +139,14 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 	if (!ns)
 		return -ENOENT;
 
-	msg = nlmsg_new(192, GFP_KERNEL);
+	/*
+	 * 缓冲必须按「属性条数 × 单条上限」估。
+	 * 曾经写 192 字节，随着健康块逐次追加字段，某一次追加后就越过了上限 ——
+	 * 而 nla_put_* 撑爆只返回 -EMSGSIZE，整个 GET_HEALTH 静默变成
+	 * NLMSG_ERROR（表现是 kdgctl 打出 `attr 0 len=16`），没有任何编译期提示。
+	 * 现在约 40 条属性（u64 各占 12 字节带对齐），1024 有充分余量。
+	 */
+	msg = nlmsg_new(1024, GFP_KERNEL);
 	if (!msg)
 		return -ENOMEM;
 
@@ -186,12 +194,14 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 		struct kdg_resolve_stats rs;
 		struct kdg_sflight_stats fs;
 		struct kdg_quota_stats qs;
+		struct kdg_h2_stats hs;
 
 		kdg_doh_get_stats(&ds);
 		kdg_cache_stats(&cs);
 		kdg_resolve_get_stats(&rs);
 		kdg_sflight_stats(&fs);
 		kdg_quota_stats(&qs);
+		kdg_h2_get_stats(&hs);
 		if (nla_put_u32(msg, KDG_HA_CA_COUNT, kdg_tls_ca_count()) ||
 		    nla_put_u64_64bit(msg, KDG_HA_DOH_QUERIES, ds.queries,
 				      KDG_HA_UNSPEC) ||
@@ -227,7 +237,17 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 				      KDG_HA_UNSPEC) ||
 		    nla_put_u64_64bit(msg, KDG_HA_QUOTA_DENIED, qs.denied,
 				      KDG_HA_UNSPEC) ||
-		    nla_put_u32(msg, KDG_HA_QUOTA_BUCKETS, qs.buckets_used)) {
+		    nla_put_u32(msg, KDG_HA_QUOTA_BUCKETS, qs.buckets_used) ||
+		    nla_put_u64_64bit(msg, KDG_HA_H2_SESSIONS, hs.sessions,
+				      KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_H2_REQUESTS, hs.requests,
+				      KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_H2_OK, hs.ok,
+				      KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_H2_PROTO_ERRORS,
+				      hs.proto_errors, KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_H2_STREAM_RESETS,
+				      hs.stream_resets, KDG_HA_UNSPEC)) {
 			nla_nest_cancel(msg, nest);
 			goto nla_failure;
 		}

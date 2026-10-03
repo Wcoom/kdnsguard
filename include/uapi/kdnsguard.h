@@ -127,6 +127,12 @@ enum kdg_health_attr {
 	KDG_HA_QUOTA_ALLOWED,		/* u64 */
 	KDG_HA_QUOTA_DENIED,		/* u64：超额被拒 */
 	KDG_HA_QUOTA_BUCKETS,		/* u32：已用的配额桶数 */
+	/* HTTP/2（nghttp2）统计。 */
+	KDG_HA_H2_SESSIONS,		/* u64 */
+	KDG_HA_H2_REQUESTS,		/* u64 */
+	KDG_HA_H2_OK,			/* u64 */
+	KDG_HA_H2_PROTO_ERRORS,		/* u64：nghttp2 层错误 */
+	KDG_HA_H2_STREAM_RESETS,	/* u64 */
 	__KDG_HA_MAX,
 };
 #define KDG_HA_MAX (__KDG_HA_MAX - 1)
