@@ -17,6 +17,11 @@ kdnsguard-y += kdg_nat.o
 kdnsguard-y += kdg_genl.o
 kdnsguard-y += kdg_mbedtls.o
 kdnsguard-y += kdg_divti3.o
+kdnsguard-y += kdg_sock.o
+kdnsguard-y += kdg_tls.o
+kdnsguard-y += kdg_http.o
+kdnsguard-y += kdg_doh.o
+kdnsguard-y += kdg_chardev.o
 # mbedTLS：**逐文件**列入复合对象，不能写 `kdnsguard-y += mbedtls/`。
 # 子目录写法只对 obj-y / obj-m 生效；对复合对象（kdnsguard-y）会被当成一个
 # 名为 "mbedtls/" 的目标文件，链接期报 "cannot open kernel/mbedtls/: Is a directory"。

@@ -19,6 +19,8 @@
 #include <net/net_namespace.h>
 
 #include "kdg.h"
+#include "kdg_tls.h"
+#include "kdg_doh.h"
 
 /* 骨架阶段的安全闸：即使有人拿到 CAP_NET_ADMIN 并调用 ENABLE_INTERCEPT，
  * 只要模块不是以 allow_intercept=1 加载的，就拒绝启用。理由是本阶段
@@ -33,6 +35,7 @@ static int kdg_genl_caps(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_enable(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_disable(struct sk_buff *skb, struct genl_info *info);
+static int kdg_genl_set_trust(struct sk_buff *skb, struct genl_info *info);
 
 static const struct genl_ops kdg_genl_ops[] = {
 	{
@@ -57,12 +60,30 @@ static const struct genl_ops kdg_genl_ops[] = {
 				  GENL_DONT_VALIDATE_DUMP,
 	},
 	{
+		.cmd		= KDG_CMD_SET_TRUST,
+		.doit		= kdg_genl_set_trust,
+		.flags		= GENL_ADMIN_PERM,
+		.validate	= GENL_DONT_VALIDATE_STRICT |
+				  GENL_DONT_VALIDATE_DUMP,
+	},
+	{
 		.cmd		= KDG_CMD_DISABLE_INTERCEPT,
 		.doit		= kdg_genl_disable,
 		.flags		= GENL_ADMIN_PERM,
 		.validate	= GENL_DONT_VALIDATE_STRICT |
 				  GENL_DONT_VALIDATE_DUMP,
 	},
+};
+
+/* 属性策略。TRUST_MATERIAL 给到 16 KiB 上限：一张 PEM 证书约 1.5–2 KiB，
+ * 一个常见的 CA bundle 在几十张的量级，16 KiB 足以分批喂入而不会让一次
+ * 分配过大（方案 §7.4 的内存纪律同样适用于控制面）。 */
+static const struct nla_policy kdg_genl_policy[KDG_A_MAX + 1] = {
+	[KDG_A_ABI_VERSION]	= { .type = NLA_U16 },
+	[KDG_A_TRUST_MATERIAL]	= { .type = NLA_BINARY, .len = 16384 },
+	[KDG_A_GENERATION]	= { .type = NLA_U32 },
+	[KDG_A_READINESS]	= { .type = NLA_U32 },
+	[KDG_A_ERRNO]		= { .type = NLA_S32 },
 };
 
 static struct genl_family kdg_genl_family = {
@@ -75,6 +96,7 @@ static struct genl_family kdg_genl_family = {
 	/* 本族不使用任何内核内部保留 cmd；显式声明而不是留 0，避免
 	 * 将来新增 cmd 时与内核保留区间悄悄相撞。 */
 	.resv_start_op	= __KDG_CMD_MAX,
+	.policy		= kdg_genl_policy,
 };
 
 static int kdg_genl_caps(struct sk_buff *skb, struct genl_info *info)
@@ -153,6 +175,24 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 		nla_nest_cancel(msg, nest);
 		goto nla_failure;
 	}
+
+	{
+		struct kdg_doh_stats ds;
+
+		kdg_doh_get_stats(&ds);
+		if (nla_put_u32(msg, KDG_HA_CA_COUNT, kdg_tls_ca_count()) ||
+		    nla_put_u64_64bit(msg, KDG_HA_DOH_QUERIES, ds.queries,
+				      KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_DOH_OK, ds.ok,
+				      KDG_HA_UNSPEC) ||
+		    nla_put_u32(msg, KDG_HA_DOH_LAST_STATUS,
+				ds.last_http_status) ||
+		    nla_put_u32(msg, KDG_HA_DOH_LAST_RTT_MS,
+				ds.last_rtt_ms)) {
+			nla_nest_cancel(msg, nest);
+			goto nla_failure;
+		}
+	}
 	nla_nest_end(msg, nest);
 
 	genlmsg_end(msg, hdr);
@@ -183,6 +223,58 @@ static int kdg_genl_set_intercept(bool enable)
 	pr_info("接管状态 -> %s (generation=%u)\n",
 		enable ? "启用" : "停用", READ_ONCE(kdg_cfg.generation));
 	return 0;
+}
+
+/*
+ * 加载上游信任锚（方案 §6.2「受保护的初始化接口」）。
+ * 要求 CAP_NET_ADMIN：能换信任锚就能把上游换成任何人，这正是
+ * 方案 §14.1 说的「普通 App 不得换上游」。
+ */
+static int kdg_genl_set_trust(struct sk_buff *skb, struct genl_info *info)
+{
+	struct sk_buff *msg;
+	void *hdr;
+	const void *data;
+	size_t len;
+	int added, ret;
+
+	if (!info->attrs[KDG_A_TRUST_MATERIAL])
+		return -EINVAL;
+
+	data = nla_data(info->attrs[KDG_A_TRUST_MATERIAL]);
+	len = nla_len(info->attrs[KDG_A_TRUST_MATERIAL]);
+	if (len == 0)
+		return -EINVAL;
+
+	added = kdg_tls_add_ca(data, len);
+	if (added < 0) {
+		pr_warn("信任锚加载失败: %d\n", added);
+		return added;
+	}
+
+	pr_info("信任锚加载：本次 %d 张，累计 %u 张\n", added,
+		kdg_tls_ca_count());
+
+	msg = nlmsg_new(64, GFP_KERNEL);
+	if (!msg)
+		return -ENOMEM;
+
+	hdr = genlmsg_put_reply(msg, info, &kdg_genl_family, 0,
+				KDG_CMD_SET_TRUST);
+	if (!hdr) {
+		nlmsg_free(msg);
+		return -EMSGSIZE;
+	}
+
+	ret = 0;
+	if (nla_put_u32(msg, KDG_A_CA_ADDED, (u32)added) ||
+	    nla_put_u32(msg, KDG_A_CA_TOTAL, kdg_tls_ca_count())) {
+		nlmsg_free(msg);
+		return -EMSGSIZE;
+	}
+
+	genlmsg_end(msg, hdr);
+	return genlmsg_reply(msg, info);
 }
 
 static int kdg_genl_enable(struct sk_buff *skb, struct genl_info *info)

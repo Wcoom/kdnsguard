@@ -88,4 +88,12 @@ void kdg_genl_exit(void);
 /* kdg_mbedtls.c —— mbedTLS 平台适配层 */
 int kdg_mbedtls_init(void);
 
+/* kdg_tls.c —— 内核态 TLS 客户端 */
+int kdg_tls_global_init(void);
+void kdg_tls_global_exit(void);
+
+/* kdg_chardev.c —— 查询面 /dev/kdnsguard */
+int kdg_chardev_init(void);
+void kdg_chardev_exit(void);
+
 #endif /* _KDG_H */

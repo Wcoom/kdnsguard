@@ -134,6 +134,14 @@ static int __init kdg_init(void)
 		return ret;
 	}
 
+	/* TLS 子系统（熵源/DRBG/信任锚容器）也必须早于任何会话。
+	 * 信任锚本身由用户空间经事务接口注入，此处只建容器。 */
+	ret = kdg_tls_global_init();
+	if (ret) {
+		pr_err("TLS 子系统初始化失败: %d\n", ret);
+		return ret;
+	}
+
 	/* 再注册管理面，最后挂 NAT hook：这样任何时刻用户空间看到的都是一个
 	 * 能被查询的状态，而不是「NAT 已经在拦包但没人能问它在干什么」。 */
 	ret = kdg_genl_init();
@@ -142,10 +150,20 @@ static int __init kdg_init(void)
 		return ret;
 	}
 
+	ret = kdg_chardev_init();
+	if (ret) {
+		pr_err("字符设备注册失败: %d\n", ret);
+		kdg_genl_exit();
+		kdg_tls_global_exit();
+		return ret;
+	}
+
 	ret = register_pernet_subsys(&kdg_net_ops);
 	if (ret) {
 		pr_err("pernet 子系统注册失败: %d\n", ret);
+		kdg_chardev_exit();
 		kdg_genl_exit();
+		kdg_tls_global_exit();
 		return ret;
 	}
 
@@ -163,6 +181,8 @@ static void __exit kdg_exit(void)
 	 * 再拆 NAT 就是纯粹的收敛过程。 */
 	kdg_genl_exit();
 	unregister_pernet_subsys(&kdg_net_ops);
+	kdg_chardev_exit();
+	kdg_tls_global_exit();
 
 	pr_info("已卸载\n");
 }

@@ -54,6 +54,10 @@ enum kdg_genl_cmd {
 	KDG_CMD_RESET_TRANSPORT,
 	KDG_CMD_GET_STATS,
 	KDG_CMD_GET_HEALTH,
+	/* 追加于尾部（尾部追加不破坏既有 ABI）。加载上游信任锚：
+	 * 方案 §6.2「CA/证书验证材料通过受保护的初始化接口加载进内核」。
+	 * 追加语义 —— 可以分批喂入根证书与中间证书。 */
+	KDG_CMD_SET_TRUST,
 	__KDG_CMD_MAX,
 };
 #define KDG_CMD_MAX (__KDG_CMD_MAX - 1)
@@ -78,6 +82,9 @@ enum kdg_genl_attr {
 	KDG_A_STATS,			/* 嵌套：见 kdg_stats_v1 */
 	KDG_A_HEALTH,			/* 嵌套：见 kdg_health_v1 */
 	KDG_A_ERRNO,			/* s32 —— 明确 errno，不用字符串 */
+	/* 追加于尾部。SET_TRUST 的响应：本次成功加载的证书张数 / 累计张数。 */
+	KDG_A_CA_ADDED,			/* u32 */
+	KDG_A_CA_TOTAL,			/* u32 */
 	__KDG_A_MAX,
 };
 #define KDG_A_MAX (__KDG_A_MAX - 1)
@@ -98,6 +105,11 @@ enum kdg_health_attr {
 	 * 「进来了但没被判为 DNS」的量，是区分「hook 没挂上」与
 	 * 「挂上了但判定错」的关键诊断量。 */
 	KDG_HA_NAT_HOOK_CALLS,		/* u64：hook 被调用的总次数 */
+	KDG_HA_CA_COUNT,		/* u32：已加载的信任锚张数 */
+	KDG_HA_DOH_QUERIES,		/* u64：DoH 查询总数 */
+	KDG_HA_DOH_OK,			/* u64：成功数 */
+	KDG_HA_DOH_LAST_STATUS,		/* u32：最近一次 HTTP 状态码 */
+	KDG_HA_DOH_LAST_RTT_MS,		/* u32：最近一次往返毫秒 */
 	__KDG_HA_MAX,
 };
 #define KDG_HA_MAX (__KDG_HA_MAX - 1)

@@ -1,0 +1,370 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * kdg_tls.c —— 内核态 TLS 客户端会话实现。设计与约束见 kdg_tls.h。
+ */
+#define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
+
+#include <linux/kernel.h>
+#include <linux/slab.h>
+#include <linux/mutex.h>
+#include <linux/string.h>
+#include <linux/errno.h>
+
+#include "kdg_tls.h"
+
+/* ── 模块级共享状态 ──────────────────────────────────────────────────── */
+
+static DEFINE_MUTEX(kdg_tls_mutex);
+
+static mbedtls_entropy_context	kdg_entropy;
+static mbedtls_ctr_drbg_context	kdg_ctr_drbg;
+static mbedtls_x509_crt		kdg_ca;
+static bool			kdg_ca_created;
+static bool			kdg_tls_ready;
+
+void kdg_tls_lock(void)
+{
+	mutex_lock(&kdg_tls_mutex);
+}
+
+void kdg_tls_unlock(void)
+{
+	mutex_unlock(&kdg_tls_mutex);
+}
+
+/* ── BIO 回调：把 mbedTLS 的 I/O 接到内核 socket 上 ─────────────────── */
+
+/*
+ * 返回值的约定（mbedTLS 3.x）：
+ *   正数 = 实际收发的字节数
+ *   0    = 对 recv 而言表示「暂时无数据」，mbedTLS 会当作 WANT_READ 重试；
+ *          对 send 而言是错误（我们不可能「发出 0 字节」却成功）
+ *   负数 = MBEDTLS_ERR_NET_* 之一
+ *
+ * ⚠️ 这里**不能**返 0 表示连接关闭：那会被 mbedTLS 理解为「还没数据、等会儿再试」，
+ * 于是一个已经 FIN 的对端会让握手空转到超时，而不是立刻报错。
+ * 读到 0 字节必须翻译成 MBEDTLS_ERR_NET_CONN_RESET。
+ */
+static int kdg_tls_bio_send(void *ctx, const unsigned char *buf, size_t len)
+{
+	struct kdg_tls *t = ctx;
+	int ret;
+
+	ret = kdg_sock_send_all(t->sock, buf, len);
+	if (ret) {
+		t->last_net_errno = ret;
+		return MBEDTLS_ERR_NET_SEND_FAILED;
+	}
+	if (len == 0)
+		return MBEDTLS_ERR_NET_SEND_FAILED;
+	return (int)len;
+}
+
+static int kdg_tls_bio_recv(void *ctx, unsigned char *buf, size_t len)
+{
+	struct kdg_tls *t = ctx;
+	int ret;
+
+	ret = kdg_sock_recv_some(t->sock, buf, len);
+	if (ret < 0) {
+		t->last_net_errno = ret;
+		return MBEDTLS_ERR_NET_RECV_FAILED;
+	}
+	if (ret == 0) {
+		t->last_net_errno = -ECONNRESET;
+		return MBEDTLS_ERR_NET_CONN_RESET;
+	}
+	return ret;
+}
+
+/* ── 模块级生命周期 ──────────────────────────────────────────────────── */
+
+int kdg_tls_global_init(void)
+{
+	static const char pers[] = "kdnsguard-tls";
+	int ret;
+
+	mbedtls_entropy_init(&kdg_entropy);
+	mbedtls_ctr_drbg_init(&kdg_ctr_drbg);
+	mbedtls_x509_crt_init(&kdg_ca);
+	kdg_ca_created = true;
+
+	/* 熵源是内核 CRNG（见 kdg_mbedtls.c 的 mbedtls_hardware_poll）。 */
+	ret = mbedtls_ctr_drbg_seed(&kdg_ctr_drbg, mbedtls_entropy_func,
+				    &kdg_entropy,
+				    (const unsigned char *)pers,
+				    sizeof(pers) - 1);
+	if (ret) {
+		pr_err("CTR_DRBG 播种失败: %s (-0x%04x)\n",
+		       kdg_tls_strerror(ret), -ret);
+		mbedtls_x509_crt_free(&kdg_ca);
+		mbedtls_ctr_drbg_free(&kdg_ctr_drbg);
+		mbedtls_entropy_free(&kdg_entropy);
+		kdg_ca_created = false;
+		return -EIO;
+	}
+
+	kdg_tls_ready = true;
+	pr_info("TLS 子系统就绪（CTR_DRBG 已播种，信任锚 %u 张）\n",
+		kdg_tls_ca_count());
+	return 0;
+}
+
+void kdg_tls_global_exit(void)
+{
+	if (!kdg_ca_created)
+		return;
+
+	mbedtls_x509_crt_free(&kdg_ca);
+	mbedtls_ctr_drbg_free(&kdg_ctr_drbg);
+	mbedtls_entropy_free(&kdg_entropy);
+	kdg_ca_created = false;
+	kdg_tls_ready = false;
+}
+
+/* ── 信任锚 ──────────────────────────────────────────────────────────── */
+
+int kdg_tls_add_ca(const u8 *data, size_t len)
+{
+	unsigned int before, after;
+	int ret;
+
+	if (!data || len == 0)
+		return -EINVAL;
+	if (!kdg_ca_created)
+		return -EAGAIN;
+
+	/* mbedtls_x509_crt_parse 会把 PEM 里**所有**证书追加进链，返回 0
+	 * 表示全部成功；返回正数表示有 N 张解析失败但仍追加了其余部分 ——
+	 * 后者必须当成失败处理：带着残缺的信任锚去握手，等于把安全性
+	 * 建立在「恰好没被解析到的那张不是关键」这个没有根据的假设上。 */
+	before = kdg_tls_ca_count();
+	ret = mbedtls_x509_crt_parse(&kdg_ca, data, len);
+	after = kdg_tls_ca_count();
+
+	if (ret != 0) {
+		pr_err("信任锚解析有失败项（%d 张），拒绝本次加载\n",
+		       ret);
+		/* 已追加的部分无法单张摘除，只能整体作废，避免留下未知状态。 */
+		kdg_tls_clear_ca();
+		return -EINVAL;
+	}
+	if (after == before)
+		return -EINVAL;
+
+	return (int)(after - before);
+}
+
+unsigned int kdg_tls_ca_count(void)
+{
+	unsigned int n = 0;
+	const mbedtls_x509_crt *c;
+
+	if (!kdg_ca_created)
+		return 0;
+
+	for (c = &kdg_ca; c != NULL; c = c->next)
+		n++;
+
+	return n;
+}
+
+void kdg_tls_clear_ca(void)
+{
+	if (!kdg_ca_created)
+		return;
+
+	mbedtls_x509_crt_free(&kdg_ca);
+	mbedtls_x509_crt_init(&kdg_ca);
+}
+
+/* ── 会话 ────────────────────────────────────────────────────────────── */
+
+/*
+ * ALPN 列表。**本阶段只提供 http/1.1** —— 理由见 kdg_tls.h 文件头：
+ * H2 客户端尚未移植，此刻宣告 h2 会让服务端选中它，而我们无法构造
+ * 合法的 HTTP/2 帧，得到的是一条「看似连上、实则不可用」的连接。
+ * P2 的 H2 就绪后在此加入 "h2"（放在 http/1.1 之前，因为列表有序）。
+ *
+ * mbedTLS 只保存指针，故必须是静态生存期。
+ */
+/* 类型必须是 `const char *[]`：mbedtls_ssl_conf_alpn_protocols() 的形参是
+ * `const char **`，写成 `const char *const[]` 会因丢弃顶层 const 而编译失败。 */
+static const char *kdg_alpn_protos[] = {
+	"http/1.1",
+	NULL,
+};
+
+int kdg_tls_session_open(struct kdg_tls *t, struct kdg_sock *sock,
+			 const char *hostname)
+{
+	int ret;
+
+	if (!t || !sock || !hostname)
+		return -EINVAL;
+	if (!kdg_tls_ready)
+		return -EAGAIN;
+
+	memset(t, 0, sizeof(*t));
+	t->sock = sock;
+
+	mbedtls_ssl_init(&t->ssl);
+	mbedtls_ssl_config_init(&t->conf);
+
+	ret = mbedtls_ssl_config_defaults(&t->conf,
+					  MBEDTLS_SSL_IS_CLIENT,
+					  MBEDTLS_SSL_TRANSPORT_STREAM,
+					  MBEDTLS_SSL_PRESET_DEFAULT);
+	if (ret) {
+		pr_err("ssl_config_defaults 失败: %s\n", kdg_tls_strerror(ret));
+		goto fail;
+	}
+
+	/* 证书验证绝不关闭（方案 §6.2 的硬性要求）。 */
+	mbedtls_ssl_conf_authmode(&t->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+
+	/* 首版只走 TLS 1.2 及以上；1.2 保留是为了互操作，不是降级默认。 */
+	mbedtls_ssl_conf_min_tls_version(&t->conf, MBEDTLS_SSL_VERSION_TLS1_2);
+
+	mbedtls_ssl_conf_rng(&t->conf, mbedtls_ctr_drbg_random, &kdg_ctr_drbg);
+	mbedtls_ssl_conf_ca_chain(&t->conf, &kdg_ca, NULL);
+	mbedtls_ssl_conf_alpn_protocols(&t->conf, kdg_alpn_protos);
+
+	/* 会话票据：本项目不做持久化票据存储（§6.2「连接恢复票据有界存储」），
+	 * 且 0-RTT 首期禁用 —— mbedTLS 默认不启用 early data，无需额外操作。 */
+	mbedtls_ssl_conf_session_tickets(&t->conf, MBEDTLS_SSL_SESSION_TICKETS_DISABLED);
+
+	ret = mbedtls_ssl_setup(&t->ssl, &t->conf);
+	if (ret) {
+		pr_err("ssl_setup 失败: %s\n", kdg_tls_strerror(ret));
+		goto fail;
+	}
+
+	/* SNI 与主机名校验。必须在握手前设置；直连 IP 也不例外
+	 * （方案 §6.2：「不因直连 IP 而遗漏 SNI」）。 */
+	ret = mbedtls_ssl_set_hostname(&t->ssl, hostname);
+	if (ret) {
+		pr_err("set_hostname 失败: %s\n", kdg_tls_strerror(ret));
+		goto fail;
+	}
+
+	/* 第三个回调留 NULL：DTLS 才需要 recv_timeout，而我们未启用 DTLS；
+	 * 超时由 kdg_sock 的 sk_rcvtimeo 承担。 */
+	mbedtls_ssl_set_bio(&t->ssl, t, kdg_tls_bio_send, kdg_tls_bio_recv, NULL);
+	return 0;
+
+fail:
+	mbedtls_ssl_config_free(&t->conf);
+	mbedtls_ssl_free(&t->ssl);
+	t->sock = NULL;
+	return -EIO;
+}
+
+int kdg_tls_handshake(struct kdg_tls *t)
+{
+	int ret;
+
+	if (!t || !t->sock)
+		return -EINVAL;
+
+	ret = mbedtls_ssl_handshake(&t->ssl);
+	if (ret != 0) {
+		/* 握手失败时，证书类错误往往同时体现在 verify result 里。
+		 * 把它记下来，便于上层给出「是证书问题还是网络问题」的区分。 */
+		t->verify_flags = mbedtls_ssl_get_verify_result(&t->ssl);
+		pr_warn("TLS 握手失败: %s (-0x%04x) verify_flags=0x%08x\n",
+			kdg_tls_strerror(ret), -ret, t->verify_flags);
+		return -EIO;
+	}
+
+	/* 双保险：即使 mbedTLS 放行，也显式复查一次验证结果。
+	 * VERIFY_REQUIRED 下正常不会走到这里，但显式复查能让「验证被意外
+	 * 关闭」这类配置错误变成显式失败而不是静默通过。 */
+	t->verify_flags = mbedtls_ssl_get_verify_result(&t->ssl);
+	if (t->verify_flags != 0) {
+		pr_err("证书验证未通过: flags=0x%08x\n", t->verify_flags);
+		return -EACCES;
+	}
+
+	t->handshaken = true;
+	pr_info("TLS 握手完成（协议 %s，密码套件 %s，ALPN %s）\n",
+		mbedtls_ssl_get_version(&t->ssl),
+		mbedtls_ssl_get_ciphersuite(&t->ssl),
+		kdg_tls_alpn(t) ? kdg_tls_alpn(t) : "(未协商)");
+	return 0;
+}
+
+int kdg_tls_write(struct kdg_tls *t, const void *buf, size_t len)
+{
+	size_t off = 0;
+	const u8 *p = buf;
+
+	if (!t || !t->handshaken)
+		return -EINVAL;
+
+	while (off < len) {
+		int ret = mbedtls_ssl_write(&t->ssl, p + off, len - off);
+
+		if (ret < 0) {
+			pr_warn("TLS 写入失败: %s\n", kdg_tls_strerror(ret));
+			return -EIO;
+		}
+		if (ret == 0)
+			return -EPIPE;
+		off += (size_t)ret;
+	}
+	return 0;
+}
+
+int kdg_tls_read(struct kdg_tls *t, void *buf, size_t len)
+{
+	int ret;
+
+	if (!t || !t->handshaken)
+		return -EINVAL;
+
+	ret = mbedtls_ssl_read(&t->ssl, buf, len);
+	if (ret == 0)
+		return 0;			/* 对端正常关闭 */
+	if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
+		return 0;
+	if (ret < 0) {
+		pr_warn("TLS 读取失败: %s\n", kdg_tls_strerror(ret));
+		return -EIO;
+	}
+	return ret;
+}
+
+const char *kdg_tls_alpn(const struct kdg_tls *t)
+{
+	if (!t)
+		return NULL;
+	return mbedtls_ssl_get_alpn_protocol(&t->ssl);
+}
+
+void kdg_tls_session_close(struct kdg_tls *t)
+{
+	if (!t)
+		return;
+
+	if (t->handshaken) {
+		/* 尽力发 close_notify，但**不因它失败而改变结果**：
+		 * 对端可能已经走了，此时关连接仍然应当成功。 */
+		mbedtls_ssl_close_notify(&t->ssl);
+		t->handshaken = false;
+	}
+
+	mbedtls_ssl_free(&t->ssl);
+	mbedtls_ssl_config_free(&t->conf);
+	t->sock = NULL;
+}
+
+const char *kdg_tls_strerror(int err)
+{
+	static char buf[96];
+
+	mbedtls_strerror(err, buf, sizeof(buf));
+	if (buf[0] == '\0')
+		scnprintf(buf, sizeof(buf), "未知 mbedTLS 错误 -0x%04x", -err);
+	return buf;
+}

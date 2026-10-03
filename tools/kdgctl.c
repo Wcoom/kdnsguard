@@ -24,6 +24,23 @@ typedef unsigned long  u64;
 typedef signed int     s32;
 typedef unsigned long  usize;
 
+/* freestanding：没有 stdbool.h / string.h，自己补最小集。
+ * 不引入 stdint.h 是因为本机没有 aarch64 交叉 libc，任何 libc 头都不可用。 */
+typedef unsigned char  bool_;
+typedef unsigned char  kdg_bool;
+#define true  1
+#define false 0
+
+static void *memset(void *dst, int c, usize n)
+{
+	u8 *d = dst;
+	usize i;
+
+	for (i = 0; i < n; i++)
+		d[i] = (u8)c;
+	return dst;
+}
+
 #include "uapi/kdnsguard.h"
 
 /* ── 裸系统调用 ───────────────────────────────────────────────────────── */
@@ -359,17 +376,360 @@ static void dump_attrs(const char *title)
 	dump_attrs_at(p, rem, 0);
 }
 
+
+/* ── 进程入口参数 ─────────────────────────────────────────────────────
+ * freestanding 程序没有 libc 的 _start 包装，得自己从栈上取 argc/argv。
+ * aarch64 Linux 的进程入口约定：sp 指向 argc，紧接着是 argv[] 指针数组。 */
+static long sys4(long n, long a, long b, long c, long d)
+{
+	register long x8 __asm__("x8") = n;
+	register long x0 __asm__("x0") = a;
+	register long x1 __asm__("x1") = b;
+	register long x2 __asm__("x2") = c;
+	register long x3 __asm__("x3") = d;
+
+	__asm__ volatile("svc #0"
+			 : "+r"(x0)
+			 : "r"(x1), "r"(x2), "r"(x3), "r"(x8)
+			 : "memory", "cc");
+	return x0;
+}
+
+static void get_args(long *argc, char ***argv)
+{
+	long *sp;
+
+	__asm__ volatile("mov %0, sp" : "=r"(sp));
+	*argc = sp[0];
+	*argv = (char **)(sp + 1);
+}
+
+static int str_eq(const char *a, const char *b)
+{
+	while (*a && *b) {
+		if (*a != *b)
+			return 0;
+		a++;
+		b++;
+	}
+	return *a == *b;
+}
+
+/* ── 文件读取 ─────────────────────────────────────────────────────────── */
+
+#define SYS_read	63
+#define SYS_close	57
+#define SYS_openat	56
+#define AT_FDCWD_	(-100)
+#define O_RDONLY_	0
+
+static int read_file(const char *path, u8 *buf, usize cap, usize *outlen)
+{
+	long fd, n;
+
+	/* 用 openat 而不是 open：aarch64 没有独立的 open 系统调用。 */
+	fd = sys4(SYS_openat, AT_FDCWD_, (long)path, O_RDONLY_, 0);
+	if (fd < 0)
+		return (int)fd;
+
+	n = sys3(SYS_read, fd, (long)buf, (long)cap);
+	sys3(SYS_close, fd, 0, 0);
+	if (n < 0)
+		return (int)n;
+
+	*outlen = (usize)n;
+	return 0;
+}
+
+/* ── DNS 查询报文构造（本工具的测试载荷）────────────────────────────── */
+
+static usize dn_encode(u8 *out, const char *name)
+{
+	usize o = 0;
+
+	while (*name) {
+		const char *p = name;
+		usize l = 0;
+
+		while (*p && *p != '.') {
+			p++;
+			l++;
+		}
+		if (l == 0 || l > 63)
+			return 0;
+		out[o++] = (u8)l;
+		{
+			usize i;
+
+			for (i = 0; i < l; i++)
+				out[o++] = (u8)name[i];
+		}
+		name = (*p == '.') ? p + 1 : p;
+	}
+	out[o++] = 0;
+	return o;
+}
+
+static usize build_dns_query(u8 *out, const char *name, u16 qtype)
+{
+	usize n = 12;
+	usize nl;
+
+	out[0] = 0x12; out[1] = 0x34;	/* ID */
+	out[2] = 0x01; out[3] = 0x00;	/* flags: RD */
+	out[4] = 0x00; out[5] = 0x01;	/* qdcount = 1 */
+	out[6] = 0; out[7] = 0; out[8] = 0; out[9] = 0;
+	out[10] = 0; out[11] = 0;
+
+	nl = dn_encode(out + n, name);
+	if (nl == 0)
+		return 0;
+	n += nl;
+
+	out[n++] = (u8)(qtype >> 8);
+	out[n++] = (u8)(qtype & 0xff);
+	out[n++] = 0;			/* qclass = IN */
+	out[n++] = 1;
+	return n;
+}
+
+/* ── 信任锚加载（Generic Netlink）────────────────────────────────────── */
+
+static int cmd_trust(u16 fam, const char *path)
+{
+	static u8 file[16384];
+	struct nlmsghdr *nh = (struct nlmsghdr *)txbuf;
+	struct genlmsghdr *gh;
+	struct sockaddr_nl dst;
+	usize flen = 0;
+	int fd;
+	long n;
+	int rc;
+
+	rc = read_file(path, file, sizeof(file), &flen);
+	if (rc) {
+		puts_("读取文件失败: ");
+		puts_(path);
+		puts_("\n");
+		return 1;
+	}
+	if (flen == 0) {
+		puts_("文件为空\n");
+		return 1;
+	}
+
+	nh->nlmsg_len = sizeof(*nh) + sizeof(*gh);
+	nh->nlmsg_type = fam;
+	nh->nlmsg_flags = NLM_F_REQUEST_;
+	nh->nlmsg_seq = 2;
+	nh->nlmsg_pid = 0;
+	gh = (struct genlmsghdr *)(txbuf + sizeof(*nh));
+	gh->cmd = KDG_CMD_SET_TRUST;
+	gh->version = KDG_GENL_VERSION;
+	gh->reserved = 0;
+	attr_put(KDG_A_TRUST_MATERIAL, file, flen);
+
+	puts_("提交信任锚 ");
+	putnum(flen);
+	puts_(" 字节\n");
+
+	fd = (int)sys3(SYS_socket, AF_NETLINK_, SOCK_RAW_, NETLINK_GENERIC_);
+	if (fd < 0)
+		return 1;
+	dst.nl_family = AF_NETLINK_;
+	dst.nl_pad = 0;
+	dst.nl_pid = 0;
+	dst.nl_groups = 0;
+	if (sys3(SYS_bind, fd, (long)&dst, sizeof(dst)) < 0)
+		return 1;
+	if (sys6(SYS_sendto, fd, (long)txbuf, nh->nlmsg_len, 0, 0, 0) < 0)
+		return 1;
+
+	n = sys6(SYS_recvfrom, fd, (long)rxbuf, sizeof(rxbuf), 0, 0, 0);
+	sys3(SYS_close, fd, 0, 0);
+	if (n < 0)
+		return 1;
+
+	{
+		struct nlmsghdr *rn = (struct nlmsghdr *)rxbuf;
+		int err = rn->nlmsg_type == 2 /* NLMSG_ERROR */ &&
+			  rn->nlmsg_len >= sizeof(*rn) + 4
+			  ? *(int *)(rxbuf + sizeof(*rn)) : 0;
+		if (err) {
+			puts_("内核返回错误: ");
+			putnum((u64)(-err));
+			puts_("\n");
+			return 1;
+		}
+	}
+
+	dump_attrs("SET_TRUST 回包:");
+	return 0;
+}
+
+/* ── 查询（字符设备）─────────────────────────────────────────────────── */
+
+static int cmd_query(const char *name)
+{
+	static u8 reqbuf[256 + 512];
+	static u8 respbuf[8 + 4096];
+	struct kdg_req_v1 *req = (struct kdg_req_v1 *)reqbuf;
+	usize qlen;
+	long fd, wn, rn;
+	usize total;
+
+	qlen = build_dns_query(reqbuf + sizeof(*req), name, 1 /* A */);
+	if (qlen == 0) {
+		puts_("域名非法\n");
+		return 1;
+	}
+
+	total = sizeof(*req) + qlen;
+	memset(req, 0, sizeof(*req));
+	req->abi_version = KDG_ABI_VERSION;
+	req->opcode = KDG_OP_QUERY;
+	req->total_len = (u32)total;
+	req->request_cookie = 0x1122334455667788ULL;
+	req->deadline_ms = 5000;
+	req->query_len = (u32)qlen;
+
+	fd = sys4(SYS_openat, AT_FDCWD_, (long)"/dev/kdnsguard", O_RDONLY_, 0);
+	if (fd < 0) {
+		puts_("打开 /dev/kdnsguard 失败（errno ");
+		putnum((u64)(-fd));
+		puts_("）\n");
+		return 1;
+	}
+
+	wn = sys3(SYS_write, fd, (long)reqbuf, (long)total);
+	if (wn < 0) {
+		puts_("write 失败 errno=");
+		putnum((u64)(-wn));
+		puts_("\n");
+		sys3(SYS_close, fd, 0, 0);
+		return 1;
+	}
+
+	rn = sys3(SYS_read, fd, (long)respbuf, sizeof(respbuf));
+	sys3(SYS_close, fd, 0, 0);
+	if (rn < (long)sizeof(struct kdg_resp_v1)) {
+		puts_("read 不足（");
+		putnum((u64)rn);
+		puts_(" 字节）\n");
+		return 1;
+	}
+
+	{
+		struct kdg_resp_v1 *r = (struct kdg_resp_v1 *)respbuf;
+		usize off = sizeof(*r);
+
+		puts_("响应: status=");
+		putnum(r->status);
+		puts_(" errno=");
+		putnum(r->errno_hint);
+		puts_(" cookie=");
+		puthex(r->request_cookie);
+		puts_(" resp_len=");
+		putnum(r->response_len);
+		puts_("\n");
+
+		if (r->status != KDG_ST_OK || r->response_len < 12) {
+			puts_("查询未成功\n");
+			return 1;
+		}
+
+		/* 极简 DNS 响应摘要：rcode / ancount / 前几条 A 记录。
+		 * 完整校验是内核侧 kdg_wire.c 的职责，这里只为肉眼确认。 */
+		{
+			const u8 *w = respbuf + off;
+			usize wl = r->response_len;
+			unsigned int an, i;
+			usize p;
+
+			puts_("DNS: rcode=");
+			putnum(w[3] & 0x0f);
+			an = ((unsigned int)w[6] << 8) | w[7];
+			puts_(" ancount=");
+			putnum(an);
+			puts_("\n");
+
+			/* 跳过问题区 */
+			p = 12;
+			while (p < wl && w[p] != 0) {
+				if ((w[p] & 0xc0) == 0xc0) { p += 2; break; }
+				p += 1 + w[p];
+			}
+			if (p < wl && w[p] == 0)
+				p += 1;
+			p += 4;
+
+			for (i = 0; i < an && p + 12 <= wl; i++) {
+				unsigned int type, rdlen;
+
+				if ((w[p] & 0xc0) == 0xc0) {
+					p += 2;
+				} else {
+					while (p < wl && w[p] != 0)
+						p += 1 + w[p];
+					p += 1;
+				}
+				if (p + 10 > wl)
+					break;
+				type = ((unsigned int)w[p] << 8) | w[p + 1];
+				rdlen = ((unsigned int)w[p + 8] << 8) | w[p + 9];
+				p += 10;
+				if (p + rdlen > wl)
+					break;
+				if (type == 1 && rdlen == 4) {
+					puts_("  A ");
+					putnum(w[p]);
+					puts_(".");
+					putnum(w[p + 1]);
+					puts_(".");
+					putnum(w[p + 2]);
+					puts_(".");
+					putnum(w[p + 3]);
+					puts_("\n");
+				}
+				p += rdlen;
+			}
+		}
+	}
+	return 0;
+}
+
 void _start(void)
 {
+	long argc;
+	char **argv;
 	u16 version = 0;
-	u16 fam = resolve_family(&version);
+	u16 fam;
 	long n;
 
+	get_args(&argc, &argv);
+
+	fam = resolve_family(&version);
 	if (!fam) {
 		puts_("失败：Generic Netlink 族 \"");
 		puts_(KDG_GENL_NAME);
 		puts_("\" 不存在（模块未加载？）\n");
 		sys3(SYS_exit, 1, 0, 0);
+	}
+
+	/* 带参数时按子命令派发；不带参数时打印诊断总览（保持原行为）。 */
+	if (argc >= 2 && str_eq(argv[1], "trust")) {
+		if (argc < 3) {
+			puts_("用法: kdgctl trust <pem文件>\n");
+			sys3(SYS_exit, 1, 0, 0);
+		}
+		sys3(SYS_exit, cmd_trust(fam, argv[2]), 0, 0);
+	}
+	if (argc >= 2 && str_eq(argv[1], "query")) {
+		if (argc < 3) {
+			puts_("用法: kdgctl query <域名>\n");
+			sys3(SYS_exit, 1, 0, 0);
+		}
+		sys3(SYS_exit, cmd_query(argv[2]), 0, 0);
 	}
 
 	puts_("族 ");

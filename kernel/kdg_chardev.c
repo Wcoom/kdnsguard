@@ -1,0 +1,353 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * kdg_chardev.c —— 查询面：受控字符设备 /dev/kdnsguard（方案 §14.2）。
+ *
+ * 为什么查询不走 Generic Netlink：netlink 是**管理面**，承载配置事务与状态
+ * 查询；DNS 正文是高频小块二进制，走 netlink 会让属性解析（对齐、拷贝、
+ * 逐属性校验）成为每一次查询的固定开销。方案 §14.2 因此把查询面单列。
+ *
+ * 首期形态（有意从简，逐条对应方案 §14.2 的措辞）：
+ *  - **不做共享内存 mmap 环形队列**。方案原文：「首期不做 mmap，减少内存
+ *    生命周期与竞态」。故用 write/read/poll 的拷贝语义。
+ *  - 一次 write 提交一条查询，**同步**完成（本层运行在进程上下文，可睡眠），
+ *    结果留在下一个 read 里。取消（CANCEL）暂不实现 —— 同步语义下调用方
+ *    自己超时返回即可；P2 引入异步队列时再加。
+ *  - 每个打开的文件描述符绑定一份独立上下文（caller-bound context），
+ *    互不干扰；close 时全部释放。
+ *
+ * 拒绝规则（方案 §14.2 点名要求）：
+ *  - abi_version 不认识 → KDG_ST_EABI
+ *  - opcode 不认识 → KDG_ST_EOP
+ *  - 长度溢出或越界 → KDG_ST_EMSGSIZE
+ *  - 未配置信任锚 → KDG_ST_EUPSTREAM（不是 EPERM：不是权限问题）
+ */
+#define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
+
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/fs.h>
+#include <linux/cdev.h>
+#include <linux/device.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
+#include <linux/poll.h>
+#include <linux/mutex.h>
+
+#include "kdg.h"
+#include "kdg_doh.h"
+
+struct kdg_file_ctx {
+	struct mutex		lock;		/* 串行化同一 fd 上的 write/read */
+	struct kdg_doh_cfg	cfg;
+	u8		       *resp;		/* kdg_resp_v1 + response_wire */
+	size_t			resp_len;
+	size_t			resp_off;
+	bool			have_resp;
+};
+
+static dev_t		kdg_devno;
+static struct class    *kdg_class;
+static struct cdev	kdg_cdev;
+
+/* 前置声明：kdg_do_query 先用到它，定义在本节之后。 */
+static int kdg_status_from_errno(int err);
+
+/* ── 请求/响应编解码 ─────────────────────────────────────────────────── */
+
+static int kdg_do_query(struct kdg_file_ctx *ctx, const struct kdg_req_v1 *req,
+			const u8 *qwire, size_t qlen)
+{
+	u8 *rwire = NULL;
+	size_t rlen = KDG_MAX_WIRE_MSG;
+	struct kdg_resp_v1 hdr;
+	int ret, n;
+
+	rwire = kmalloc(KDG_MAX_WIRE_MSG, GFP_KERNEL);
+	if (!rwire)
+		return -ENOMEM;
+
+	memset(&ctx->cfg, 0, sizeof(ctx->cfg));
+	kdg_doh_default_cfg(&ctx->cfg);
+	if (req->deadline_ms)
+		ctx->cfg.deadline_ms = req->deadline_ms;
+
+	ret = kdg_doh_query(&ctx->cfg, qwire, qlen, rwire, &rlen);
+
+	/* 响应头 + 正文一次分配：读路径只需一次 copy_to_user，
+	 * 也避免两个缓冲各自的生命周期管理。 */
+	ctx->resp_len = sizeof(hdr) + rlen;
+	ctx->resp = kmalloc(ctx->resp_len, GFP_KERNEL);
+	if (!ctx->resp) {
+		kfree(rwire);
+		return -ENOMEM;
+	}
+
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.abi_version = KDG_ABI_VERSION;
+	hdr.status = ret ? kdg_status_from_errno(ret) : KDG_ST_OK;
+	hdr.errno_hint = ret ? (u32)(-ret) : 0;
+	hdr.request_cookie = req->request_cookie;
+	hdr.actual_network = 0;			/* P1 恒为 init_net */
+	hdr.generation = READ_ONCE(kdg_cfg.generation);
+	hdr.response_len = ret ? 0 : (u32)rlen;
+
+	memcpy(ctx->resp, &hdr, sizeof(hdr));
+	if (!ret && rlen)
+		memcpy(ctx->resp + sizeof(hdr), rwire, rlen);
+
+	ctx->resp_off = 0;
+	ctx->have_resp = true;
+
+	/* 对于「查询本身失败」的情形，我们仍然回一个完整的响应帧（带错误码），
+	 * 而不是用 write 的返回值表达错误 —— 这样调用方只需处理一种返回路径。
+	 * 因此这里总是返回写入的字节数。 */
+	n = (int)req->total_len;
+	kfree(rwire);
+	return n;
+}
+
+static int kdg_status_from_errno(int err)
+{
+	switch (err) {
+	case 0:			return KDG_ST_OK;
+	case -EAGAIN:		return KDG_ST_EUPSTREAM;
+	case -ETIMEDOUT:	return KDG_ST_ETIMEDOUT;
+	case -EACCES:		return KDG_ST_EPERM;
+	case -EMSGSIZE:		return KDG_ST_EMSGSIZE;
+	case -EINVAL:		return KDG_ST_EBADWIRE;
+	default:		return KDG_ST_EUPSTREAM;
+	}
+}
+
+/* ── write：提交查询 ─────────────────────────────────────────────────── */
+
+static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
+			     size_t count, loff_t *ppos)
+{
+	struct kdg_file_ctx *ctx = filp->private_data;
+	struct kdg_req_v1 req;
+	u8 *kbuf = NULL;
+	size_t qlen;
+	int ret;
+
+	if (!ctx)
+		return -EINVAL;
+	/* 拒绝 seek：本设备是消息流，不是可定位的文件。 */
+	if (*ppos != 0)
+		return -ESPIPE;
+
+	if (count < sizeof(req) || count > sizeof(req) + KDG_MAX_WIRE_MSG)
+		return -EMSGSIZE;
+
+	kbuf = kmalloc(count, GFP_KERNEL);
+	if (!kbuf)
+		return -ENOMEM;
+
+	if (copy_from_user(kbuf, ubuf, count)) {
+		ret = -EFAULT;
+		goto out;
+	}
+
+	memcpy(&req, kbuf, sizeof(req));
+
+	/* ── 校验 ── */
+	if (req.abi_version != KDG_ABI_VERSION) {
+		/* 明确拒绝而不是尽力解析：ABI 不同意味着字段布局可能不同，
+		 * 「尽力而为」会把错误解释成合法请求。 */
+		ret = -EPROTO;
+		goto out;
+	}
+	if (req.opcode != KDG_OP_QUERY) {
+		/* CANCEL / MAP_LOOKUP / GET_HEALTH 在 P1 未实现。
+		 * 明确返回「不支持」而不是静默成功。 */
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	if (req.total_len != count) {
+		ret = -EMSGSIZE;
+		goto out;
+	}
+	if (req.flags & ~KDG_REQ_FLAG_MASK) {
+		ret = -EINVAL;
+		goto out;
+	}
+	qlen = req.query_len;
+	if (qlen == 0 || qlen > KDG_MAX_WIRE_MSG ||
+	    sizeof(req) + qlen > count) {
+		ret = -EMSGSIZE;
+		goto out;
+	}
+	if (req.expected_generation &&
+	    req.expected_generation != READ_ONCE(kdg_cfg.generation)) {
+		ret = -ESTALE;
+		goto out;
+	}
+
+	/* 方案 §14.2：「内核根据调用者凭据与系统授予的网络权限决定可用 network，
+	 * 不相信请求中自报 UID」。P1 还没有网络上下文输入面（见 kdg_sock.c），
+	 * 一律走 init_net；凭据裁决随 P3 的 SET_NETWORK 一起落地。 */
+
+	ret = mutex_lock_interruptible(&ctx->lock);
+	if (ret)
+		goto out;
+
+	/* 上一轮的响应若还没被读走，用新的覆盖 —— 本设备是「最新状态」
+	 * 语义而不是队列。方案 §14.2 要求「回包不写入已关闭上下文」，
+	 * 这里在 close 时会释放，故不存在悬垂。 */
+	kfree(ctx->resp);
+	ctx->resp = NULL;
+	ctx->have_resp = false;
+
+	ret = kdg_do_query(ctx, &req, kbuf + sizeof(req), qlen);
+
+	mutex_unlock(&ctx->lock);
+
+out:
+	kfree(kbuf);
+	return ret;
+}
+
+/* ── read：取回响应 ──────────────────────────────────────────────────── */
+
+static ssize_t kdg_chr_read(struct file *filp, char __user *ubuf,
+			    size_t count, loff_t *ppos)
+{
+	struct kdg_file_ctx *ctx = filp->private_data;
+	size_t n;
+	int ret;
+
+	if (!ctx)
+		return -EINVAL;
+	if (*ppos != 0)
+		return -ESPIPE;
+
+	ret = mutex_lock_interruptible(&ctx->lock);
+	if (ret)
+		return ret;
+
+	if (!ctx->have_resp || !ctx->resp) {
+		ret = -EAGAIN;		/* 还没提交过查询，或已经读完 */
+		goto out;
+	}
+
+	n = ctx->resp_len - ctx->resp_off;
+	if (n > count)
+		n = count;
+
+	if (copy_to_user(ubuf, ctx->resp + ctx->resp_off, n)) {
+		ret = -EFAULT;
+		goto out;
+	}
+
+	ctx->resp_off += n;
+	if (ctx->resp_off >= ctx->resp_len) {
+		/* 整个响应已交付，清空以便下一次查询 */
+		kfree(ctx->resp);
+		ctx->resp = NULL;
+		ctx->resp_len = 0;
+		ctx->resp_off = 0;
+		ctx->have_resp = false;
+	}
+
+	ret = (int)n;
+out:
+	mutex_unlock(&ctx->lock);
+	return ret;
+}
+
+/* ── poll / open / release ───────────────────────────────────────────── */
+
+static __poll_t kdg_chr_poll(struct file *filp, poll_table *wait)
+{
+	struct kdg_file_ctx *ctx = filp->private_data;
+	__poll_t mask = 0;
+
+	if (!ctx)
+		return EPOLLERR;
+
+	/* 不做真正的等待队列：查询在 write() 里同步完成，返回时结果已就绪，
+	 * 因此 poll 只需报告当前状态。方案 §9.3 要求「无请求时 worker 睡眠」，
+	 * 本阶段没有常驻 worker，也就无从忙等。 */
+	if (ctx->have_resp)
+		mask |= EPOLLIN | EPOLLRDNORM;
+
+	return mask;
+}
+
+static int kdg_chr_open(struct inode *inode, struct file *filp)
+{
+	struct kdg_file_ctx *ctx;
+
+	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
+
+	mutex_init(&ctx->lock);
+	kdg_doh_default_cfg(&ctx->cfg);
+	filp->private_data = ctx;
+	return 0;
+}
+
+static int kdg_chr_release(struct inode *inode, struct file *filp)
+{
+	struct kdg_file_ctx *ctx = filp->private_data;
+
+	if (!ctx)
+		return 0;
+
+	kfree(ctx->resp);
+	mutex_destroy(&ctx->lock);
+	kfree(ctx);
+	filp->private_data = NULL;
+	return 0;
+}
+
+static const struct file_operations kdg_chr_fops = {
+	.owner		= THIS_MODULE,
+	.open		= kdg_chr_open,
+	.release	= kdg_chr_release,
+	.read		= kdg_chr_read,
+	.write		= kdg_chr_write,
+	.poll		= kdg_chr_poll,
+	.llseek		= no_llseek,
+};
+
+/* ── 注册 ────────────────────────────────────────────────────────────── */
+
+int kdg_chardev_init(void)
+{
+	int ret;
+
+	ret = alloc_chrdev_region(&kdg_devno, 0, 1, KDG_DEVICE_NAME);
+	if (ret) {
+		pr_err("alloc_chrdev_region 失败: %d\n", ret);
+		return ret;
+	}
+
+	cdev_init(&kdg_cdev, &kdg_chr_fops);
+	kdg_cdev.owner = THIS_MODULE;
+
+	ret = cdev_add(&kdg_cdev, kdg_devno, 1);
+	if (ret) {
+		pr_err("cdev_add 失败: %d\n", ret);
+		goto err_region;
+	}
+
+	/* 只建字符设备，不建 sysfs class：class 会引出 /sys/class 条目与
+	 * uevent，而 Android 的 ueventd 需要配套规则才能正确设权限。
+	 * 本阶段用 devtmpfs 自动创建 /dev/kdnsguard（root:root 0600）。
+	 * 非 root 访问所需的 ueventd 规则属于 P5 的平台集成。 */
+	pr_info("/dev/%s 已注册（major %u，root:root 0600）\n",
+		KDG_DEVICE_NAME, MAJOR(kdg_devno));
+	return 0;
+
+err_region:
+	unregister_chrdev_region(kdg_devno, 1);
+	return ret;
+}
+
+void kdg_chardev_exit(void)
+{
+	cdev_del(&kdg_cdev);
+	unregister_chrdev_region(kdg_devno, 1);
+}

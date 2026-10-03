@@ -136,7 +136,27 @@
 #define MBEDTLS_PLATFORM_PRINTF_ALT
 #define MBEDTLS_PLATFORM_FPRINTF_ALT
 
-/* ── 5. 调试（开发期开启，便于首次联调看握手细节）─────────────────────
+/* ── 5. 安全清零走平台实现 ──────────────────────────────────────────────
+ *
+ * 🔴 这一项不是可选项，不定义它模块**一加载就 panic**。
+ *
+ * 上游 platform_util.c:91 是这么写的：
+ *     static void *(*const volatile memset_func)(void *, int, size_t) = memset;
+ *     ... memset_func(buf, 0, len);
+ * 那个 volatile 函数指针是**刻意的反优化手法**，保证安全清零不被编译器删掉。
+ * 但在内核里它构成一次**间接调用**，而 kCFI（CONFIG_CFI_CLANG=y）会检查
+ * 目标函数前的类型哈希 —— 内核的 memset 是 arch/arm64/lib/memset.S 的汇编
+ * 实现（memset 只是 __memset 的弱别名），**没有 kCFI 类型哈希**，于是：
+ *     CFI failure at mbedtls_platform_zeroize+0x3c (target: __memset;
+ *                 expected type: 0x8827a475)
+ *     Internal error: Oops - CFI → Kernel panic
+ *
+ * 换成平台实现后是一次**直接调用**，kCFI 不管直接调用；安全性由
+ * barrier_data() 的编译器屏障保证（内核自己的 memzero_explicit() 用的
+ * 正是这一手法，但它未导出，故在 kdg_mbedtls.c 里等价复刻）。 */
+#define MBEDTLS_PLATFORM_ZEROIZE_ALT
+
+/* ── 6. 调试（开发期开启，便于首次联调看握手细节）─────────────────────
  * 关闭可省体积；排障时打开并配合 -DMBEDTLS_DEBUG_LEVEL。 */
 #define MBEDTLS_DEBUG_C
 

@@ -20,6 +20,7 @@
 #include <linux/random.h>
 #include <linux/timekeeping.h>
 #include <linux/string.h>
+#include <linux/compiler.h>	/* barrier_data() */
 #include <linux/stdarg.h>
 #include <linux/errno.h>
 
@@ -148,6 +149,24 @@ static mbedtls_time_t kdg_mbedtls_time(mbedtls_time_t *t)
 mbedtls_ms_time_t mbedtls_ms_time(void)
 {
 	return (mbedtls_ms_time_t)(ktime_get_boottime_ns() / NSEC_PER_MSEC);
+}
+
+/* ── 3b. 安全清零（MBEDTLS_PLATFORM_ZEROIZE_ALT）────────────────────────
+ *
+ * 存在理由见 kdnsguard_mbedtls_config.h 第 5 节：上游用 volatile 函数指针
+ * 调 memset，在内核里 = 对没有 kCFI 类型哈希的汇编 memset 做间接调用 = panic。
+ *
+ * 这里用**直接调用 + 编译器屏障**复刻内核 memzero_explicit() 的手法。
+ * 为什么直接调用同样安全：mbedtls_platform_zeroize 是一个非内联的导出函数，
+ * 编译期无法证明调用方之后不再使用该缓冲区，因此这次 memset 不可能是死存储，
+ * 不会被优化掉；barrier_data() 是额外的显式保证。
+ */
+void mbedtls_platform_zeroize(void *buf, size_t len)
+{
+	if (len > 0) {
+		memset(buf, 0, len);
+		barrier_data(buf);
+	}
 }
 
 /* ── 4. 熵源 ──────────────────────────────────────────────────────────── */

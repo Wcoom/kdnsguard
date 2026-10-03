@@ -97,6 +97,22 @@ echo "--- 签名检查（应无输出）---"
 tail -c 512 "$KO_DIR"/kdnsguard.ko | strings | grep "Module signature" || echo "未签名 OK"
 echo "--- 未解析符号（正常：模块的未定义符号由内核在 insmod 时按导出表解析）---"
 nm "$KO_DIR"/kdnsguard.ko 2>/dev/null | grep " U " || echo "无"
+echo "--- kCFI 间接调用门禁（对内核符号的间接调用 = 设备上必 panic）---"
+LLVM_NM="$KERNEL_ROOT/../clang-19/bin/llvm-nm"
+[ -x "$LLVM_NM" ] || LLVM_NM=llvm-nm
+KCFI_BAD=$("$LLVM_NM" "$KO_DIR"/kdnsguard.ko 2>/dev/null | awk '
+	$2 == "U" { u[$3] = 1 }
+	$2 == "W" && $3 ~ /^__kcfi_typeid_/ { t[substr($3, 15)] = 1 }
+	END { for (x in t) if (u[x]) print x }')
+if [ -n "$KCFI_BAD" ]; then
+	echo "构建失败：本模块对以下**内核符号**发起了间接调用。"
+	echo "内核汇编实现（如 memset/__memset）没有 kCFI 类型哈希，运行时必"
+	echo "触发 'CFI failure ... brk #0x8228' → panic_on_oops → 手机重启。"
+	echo "$KCFI_BAD"
+	exit 1
+fi
+echo "无（未对任何内核符号做间接调用）"
+
 echo "--- 逐个核对上述符号都在 out/Module.symvers 中（modpost 已保证，此处留证）---"
 MISSING=""
 for s in $(nm "$KO_DIR"/kdnsguard.ko 2>/dev/null | awk '$1=="U"{print $2}'); do
