@@ -18,13 +18,14 @@ CFLAGS  := -std=gnu11 -O1 -g -Wall -Wextra -Werror \
 WIRE    := $(BUILD)/test_wire
 HTTP    := $(BUILD)/test_http
 CACHE   := $(BUILD)/test_cache
+CACHE_TAB := $(BUILD)/test_cache_tab
 WIRE_SRC  := test_wire.c  ../kernel/kdg_wire.c
 HTTP_SRC  := test_http.c  ../kernel/kdg_http.c
 CACHE_SRC := test_cache.c ../kernel/kdg_cache.c ../kernel/kdg_wire.c
 
 .PHONY: all run clean
 
-all: $(WIRE) $(HTTP) $(CACHE)
+all: $(WIRE) $(HTTP) $(CACHE) $(CACHE_TAB)
 
 $(WIRE): $(WIRE_SRC) ../kernel/kdg_wire.h ../include/kdg_base.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(WIRE_SRC)
@@ -35,6 +36,9 @@ $(HTTP): $(HTTP_SRC) ../kernel/kdg_http.h ../include/kdg_base.h | $(BUILD)
 $(CACHE): $(CACHE_SRC) ../kernel/kdg_cache.h ../kernel/kdg_wire.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(CACHE_SRC)
 
+$(CACHE_TAB): test_cache_tab.c host_kernel.h ../kernel/kdg_cache_tab.c ../kernel/kdg_cache_tab.h ../kernel/kdg_cache.c ../kernel/kdg_wire.c | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -I. -DKDG_HOST_TEST -o $@ test_cache_tab.c ../kernel/kdg_cache.c ../kernel/kdg_wire.c
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
@@ -42,6 +46,7 @@ run: all
 	@./$(WIRE)
 	@./$(HTTP)
 	@./$(CACHE)
+	@./$(CACHE_TAB)
 
 clean:
 	rm -rf $(BUILD)

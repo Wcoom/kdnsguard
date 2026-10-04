@@ -28,7 +28,7 @@
  * "use of undeclared identifier 'current'"。
  *
  * 靠调整 include 顺序只是碰运气；正确做法是给清理加作用域。
- * KDG_SHIM_TU 由 kernel/Makefile 用逐对象旗标只打给 mbedtls/*.o。
+ * KDG_SHIM_TU 由 kernel/Makefile 用逐对象旗标只打给 mbedTLS 对象文件。
  */
 #if defined(KDG_SHIM_TU)
 

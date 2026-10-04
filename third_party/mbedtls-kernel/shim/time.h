@@ -15,14 +15,12 @@
 
 #include <linux/types.h>
 #include <linux/timekeeping.h>
+#include <linux/time.h>
 #include "_kdg_common.h"
 
 typedef long time_t;
 
-/* 刻意**不**定义 struct tm：内核自己的 <linux/time.h> 已经定义了一个
- * （字段名相同但布局不同），重复定义会直接撞车。
- * MBEDTLS_HAVE_TIME_DATE 已在本项目配置里关闭 —— 证书只比较 time_t 数值，
- * 不做日期字符串格式化 —— 所以这里不需要 tm 的任何东西。 */
+/* 所有日期转换调用方复用内核 struct tm，避免与 libc 布局混用。 */
 
 /*
  * time()：nghttp2 的 nghttp2_time.c 在不定义 HAVE_CLOCK_GETTIME 时走

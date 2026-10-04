@@ -45,7 +45,7 @@ void kdg_cache_tab_exit(void);
 int kdg_cache_get(const struct kdg_cache_key *key, u64 now_ms,
 		  struct kdg_cache_tmpl *view, void **pin_token);
 
-/* 解除钉住。可与上一步的 token 配对，幂等。 */
+/* 每个成功查表的 token 必须且只能释放一次。 */
 void kdg_cache_unpin(void *token);
 
 /*

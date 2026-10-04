@@ -22,7 +22,6 @@ kdnsguard-y += kdg_tls.o
 kdnsguard-y += kdg_http.o
 kdnsguard-y += kdg_doh.o
 kdnsguard-y += kdg_chardev.o
-kdnsguard-y += kdg_psa_probe.o
 kdnsguard-y += kdg_wire.o
 kdnsguard-y += kdg_cache.o
 kdnsguard-y += kdg_cache_tab.o

@@ -41,8 +41,7 @@ void kdg_sflight_exit(void);
  * 或负 errno（-EAGAIN 表示该键的 waiter 已满，-ENOMEM）。
  *
  * 无论哪种结果，**成功时 *out 都带一个引用**，用完必须 kdg_sflight_release()。
- * waiter 满时 owner 会立刻被要求自行处理（调用方应把它当成一次普通的
- * 未命中，直接走上游并自行回填缓存）。
+ * 上限错误必须直接返回，不得绕过配额发起独立上游请求。
  */
 int kdg_sflight_begin(const struct kdg_cache_key *key, struct kdg_flight **out);
 

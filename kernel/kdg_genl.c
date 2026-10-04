@@ -307,7 +307,7 @@ static int kdg_genl_set_trust(struct sk_buff *skb, struct genl_info *info)
 
 	/* 受 debug 参数控制的首字节转储。曾用来定位「工具缓冲区越界导致
 	 * PEM 被污染」——内核侧只看到 INVALID_FORMAT，看原始字节两分钟定位。 */
-	if (unlikely(READ_ONCE(kdg_debug))) {
+	if (unlikely(READ_ONCE(kdg_debug)) && len >= 24) {
 		const u8 *p = data;
 
 		pr_info("信任锚入参 %zu 字节，首 24: %02x %02x %02x %02x %02x %02x %02x %02x"

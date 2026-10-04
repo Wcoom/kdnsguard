@@ -65,9 +65,10 @@
 #undef MBEDTLS_MEMORY_BUFFER_ALLOC_C
 #undef MBEDTLS_THREADING_C
 
-/* 日期格式化需要 gmtime/timegm，且 MBEDTLS_HAVE_TIME_DATE 会拉进
- * x509 的日期字符串解析。证书有效期比较只需 time_t 数值，故关闭。 */
-#undef MBEDTLS_HAVE_TIME_DATE
+/* 此开关控制整条证书链的有效期验证，不能关闭。UTC 转换由内核提供。 */
+#define MBEDTLS_HAVE_TIME_DATE
+#define MBEDTLS_PLATFORM_GMTIME_R_ALT
+#define MBEDTLS_SSL_DTLS_CONNECTION_ID_COMPAT 0
 
 /* PSK 与静态 DH：本项目只用证书握手。 */
 #undef MBEDTLS_KEY_EXCHANGE_PSK_ENABLED

@@ -82,7 +82,7 @@ void kdg_sflight_exit(void)
 
 int kdg_sflight_begin(const struct kdg_cache_key *key, struct kdg_flight **out)
 {
-	struct kdg_flight *f;
+	struct kdg_flight *f, *candidate;
 	u32 h;
 
 	if (!g_sf.buckets || !key || !out)
@@ -90,6 +90,10 @@ int kdg_sflight_begin(const struct kdg_cache_key *key, struct kdg_flight **out)
 	*out = NULL;
 
 	h = kdg_cache_key_hash(key);
+	/* 分配可能睡眠；锁内重新查表处理并发创建。 */
+	candidate = kzalloc(sizeof(*candidate), GFP_KERNEL);
+	if (!candidate)
+		return -ENOMEM;
 
 	spin_lock(&g_sf.lock);
 
@@ -104,6 +108,7 @@ int kdg_sflight_begin(const struct kdg_cache_key *key, struct kdg_flight **out)
 		if (f->n_waiters >= KDG_SF_MAX_WAITERS) {
 			g_sf.rejected_full++;
 			spin_unlock(&g_sf.lock);
+			kfree(candidate);
 			return -EAGAIN;
 		}
 
@@ -113,6 +118,7 @@ int kdg_sflight_begin(const struct kdg_cache_key *key, struct kdg_flight **out)
 		*out = f;
 		g_sf.joined++;
 		spin_unlock(&g_sf.lock);
+		kfree(candidate);
 		return KDG_SF_WAIT;
 	}
 
@@ -121,14 +127,11 @@ int kdg_sflight_begin(const struct kdg_cache_key *key, struct kdg_flight **out)
 		 * 让调用方自己决定是排队还是直接返回 EAGAIN。 */
 		g_sf.rejected_full++;
 		spin_unlock(&g_sf.lock);
+		kfree(candidate);
 		return -EAGAIN;
 	}
 
-	f = kzalloc(sizeof(*f), GFP_KERNEL);
-	if (!f) {
-		spin_unlock(&g_sf.lock);
-		return -ENOMEM;
-	}
+	f = candidate;
 
 	f->key = *key;
 	init_completion(&f->done);

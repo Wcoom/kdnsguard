@@ -1,0 +1,19 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef KDG_TLS_HOST_CONFIG_H
+#define KDG_TLS_HOST_CONFIG_H
+/* 复用设备配置；仅用宿主 libc 替代内核平台注入点。 */
+#include "kdnsguard_mbedtls_config.h"
+#undef MBEDTLS_PLATFORM_NO_STD_FUNCTIONS
+#undef MBEDTLS_PLATFORM_SNPRINTF_ALT
+#undef MBEDTLS_PLATFORM_VSNPRINTF_ALT
+#undef MBEDTLS_PLATFORM_MS_TIME_ALT
+#undef MBEDTLS_PLATFORM_GMTIME_R_ALT
+#undef MBEDTLS_PLATFORM_ZEROIZE_ALT
+#undef MBEDTLS_PLATFORM_PRINTF_ALT
+#undef MBEDTLS_PLATFORM_FPRINTF_ALT
+#undef MBEDTLS_ENTROPY_HARDWARE_ALT
+#undef MBEDTLS_NO_PLATFORM_ENTROPY
+#if !defined(MBEDTLS_HAVE_TIME_DATE)
+#error "设备配置必须启用证书有效期检查"
+#endif
+#endif

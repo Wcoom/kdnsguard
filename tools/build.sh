@@ -81,10 +81,11 @@ make LLVM=1 \
      modules 2>&1 | tee "$LOG"
 
 echo "--- 本模块自身的告警审计（-Wno-error 会掩盖它们）---"
-OWN_WARN=$(grep -E "^(kernel/)?kdg_[a-z]+\.c:" "$LOG" | grep -E "warning:" || true)
+OWN_WARN=$(grep -E '(^|/)kdg_[a-z0-9_]+\.c:[0-9]+:[0-9]+: warning:' "$LOG" || true)
 if [ -n "$OWN_WARN" ]; then
 	echo "$OWN_WARN"
-	echo "（以上为本项目新增代码的告警，请逐条确认）"
+	echo "构建失败：本项目代码存在告警。"
+	exit 1
 else
 	echo "无"
 fi

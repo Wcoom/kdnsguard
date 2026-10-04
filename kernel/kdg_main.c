@@ -147,6 +147,7 @@ static int __init kdg_init(void)
 	ret = kdg_genl_init();
 	if (ret) {
 		pr_err("Generic Netlink 族注册失败: %d\n", ret);
+		kdg_tls_global_exit();
 		return ret;
 	}
 
@@ -161,7 +162,6 @@ static int __init kdg_init(void)
 	ret = kdg_quota_init();
 	if (ret) {
 		pr_err("配额表初始化失败: %d\n", ret);
-		kdg_sflight_exit();
 		kdg_cache_tab_exit();
 		kdg_genl_exit();
 		kdg_tls_global_exit();

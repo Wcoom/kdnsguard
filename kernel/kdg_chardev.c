@@ -50,8 +50,29 @@ struct kdg_file_ctx {
 };
 
 static dev_t		kdg_devno;
-static struct class    *kdg_class;
 static struct cdev	kdg_cdev;
+static DEFINE_MUTEX(kdg_ops_lock);
+static DECLARE_WAIT_QUEUE_HEAD(kdg_ops_wait);
+static atomic_t kdg_active_ops = ATOMIC_INIT(0);
+static bool kdg_stopping;
+
+static bool kdg_op_enter(void)
+{
+	bool ok;
+
+	mutex_lock(&kdg_ops_lock);
+	ok = !kdg_stopping;
+	if (ok)
+		atomic_inc(&kdg_active_ops);
+	mutex_unlock(&kdg_ops_lock);
+	return ok;
+}
+
+static void kdg_op_exit(void)
+{
+	if (atomic_dec_and_test(&kdg_active_ops))
+		wake_up_all(&kdg_ops_wait);
+}
 
 /* 前置声明：kdg_do_query 先用到它，定义在本节之后。 */
 static int kdg_status_from_errno(int err);
@@ -64,7 +85,8 @@ static int kdg_do_query(struct kdg_file_ctx *ctx, const struct kdg_req_v1 *req,
 	u8 *rwire = NULL;
 	size_t rlen = KDG_MAX_WIRE_MSG;
 	struct kdg_resp_v1 hdr;
-	int ret, n;
+	int ret = 0, n;
+	u32 generation = READ_ONCE(kdg_cfg.generation);
 
 	rwire = kmalloc(KDG_MAX_WIRE_MSG, GFP_KERNEL);
 	if (!rwire)
@@ -98,7 +120,7 @@ static int kdg_do_query(struct kdg_file_ctx *ctx, const struct kdg_req_v1 *req,
 			 * profile_gen 取当前配置代际：换上游会递增它，
 			 * 从而让旧代际的缓存自动失效。 */
 			.net_id = 0,
-			.profile_gen = READ_ONCE(kdg_cfg.generation),
+			.profile_gen = generation,
 		};
 		enum kdg_source src;
 
@@ -107,7 +129,7 @@ static int kdg_do_query(struct kdg_file_ctx *ctx, const struct kdg_req_v1 *req,
 
 	/* 响应头 + 正文一次分配：读路径只需一次 copy_to_user，
 	 * 也避免两个缓冲各自的生命周期管理。 */
-	ctx->resp_len = sizeof(hdr) + rlen;
+	ctx->resp_len = sizeof(hdr) + (ret ? 0 : rlen);
 	ctx->resp = kmalloc(ctx->resp_len, GFP_KERNEL);
 	if (!ctx->resp) {
 		kfree(rwire);
@@ -120,7 +142,7 @@ static int kdg_do_query(struct kdg_file_ctx *ctx, const struct kdg_req_v1 *req,
 	hdr.errno_hint = ret ? (u32)(-ret) : 0;
 	hdr.request_cookie = req->request_cookie;
 	hdr.actual_network = 0;			/* P1 恒为 init_net */
-	hdr.generation = READ_ONCE(kdg_cfg.generation);
+	hdr.generation = generation;
 	hdr.response_len = ret ? 0 : (u32)rlen;
 
 	memcpy(ctx->resp, &hdr, sizeof(hdr));
@@ -144,8 +166,10 @@ static int kdg_status_from_errno(int err)
 	case 0:			return KDG_ST_OK;
 	case -EAGAIN:		return KDG_ST_EAGAIN;
 	case -ETIMEDOUT:	return KDG_ST_ETIMEDOUT;
-	case -EACCES:		return KDG_ST_EPERM;
+	case -EACCES:
+	case -EPERM:		return KDG_ST_EPERM;
 	case -EMSGSIZE:		return KDG_ST_EMSGSIZE;
+	case -EBADMSG:
 	case -EINVAL:		return KDG_ST_EBADWIRE;
 	default:		return KDG_ST_EUPSTREAM;
 	}
@@ -164,6 +188,8 @@ static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
 
 	if (!ctx)
 		return -EINVAL;
+	if (!kdg_op_enter())
+		return -ESHUTDOWN;
 	/* 拒绝 seek：本设备是消息流，不是可定位的文件。 */
 	if (*ppos != 0)
 		return -ESPIPE;
@@ -203,6 +229,15 @@ static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
 		ret = -EINVAL;
 		goto out;
 	}
+	/* 尚未实现的语义必须拒绝，不能默默改走默认网络。 */
+	if (req.flags || req.requested_network_handle) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	if (req.reserved0 || req.deadline_ms > 60000) {
+		ret = -EINVAL;
+		goto out;
+	}
 	qlen = req.query_len;
 	if (qlen == 0 || qlen > KDG_MAX_WIRE_MSG ||
 	    sizeof(req) + qlen > count) {
@@ -220,21 +255,26 @@ static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
 	 * 一律走 init_net；凭据裁决随 P3 的 SET_NETWORK 一起落地。 */
 
 	ret = mutex_lock_interruptible(&ctx->lock);
-	if (ret)
-		goto out;
+	if (ret) {
+		kdg_op_exit();
+		goto out_no_lock;
+	}
 
-	/* 上一轮的响应若还没被读走，用新的覆盖 —— 本设备是「最新状态」
-	 * 语义而不是队列。方案 §14.2 要求「回包不写入已关闭上下文」，
-	 * 这里在 close 时会释放，故不存在悬垂。 */
-	kfree(ctx->resp);
-	ctx->resp = NULL;
-	ctx->have_resp = false;
+	/* 未读取的结果属于原 cookie，不能被下一次提交覆盖。 */
+	if (ctx->have_resp) {
+		ret = -EAGAIN;
+		goto unlock;
+	}
 
 	ret = kdg_do_query(ctx, &req, kbuf + sizeof(req), qlen);
 
+unlock:
 	mutex_unlock(&ctx->lock);
 
-out:
+	out:
+	mutex_unlock(&ctx->lock);
+	kdg_op_exit();
+out_no_lock:
 	kfree(kbuf);
 	return ret;
 }
@@ -250,12 +290,16 @@ static ssize_t kdg_chr_read(struct file *filp, char __user *ubuf,
 
 	if (!ctx)
 		return -EINVAL;
+	if (!kdg_op_enter())
+		return -ESHUTDOWN;
 	if (*ppos != 0)
 		return -ESPIPE;
 
 	ret = mutex_lock_interruptible(&ctx->lock);
-	if (ret)
+	if (ret) {
+		kdg_op_exit();
 		return ret;
+	}
 
 	if (!ctx->have_resp || !ctx->resp) {
 		ret = -EAGAIN;		/* 还没提交过查询，或已经读完 */
@@ -283,6 +327,7 @@ static ssize_t kdg_chr_read(struct file *filp, char __user *ubuf,
 
 	ret = (int)n;
 out:
+	kdg_op_exit();
 	mutex_unlock(&ctx->lock);
 	return ret;
 }
@@ -309,6 +354,10 @@ static __poll_t kdg_chr_poll(struct file *filp, poll_table *wait)
 static int kdg_chr_open(struct inode *inode, struct file *filp)
 {
 	struct kdg_file_ctx *ctx;
+
+	/* 网络权限桥尚未落地，开发接口暂只服务受信控制方。 */
+	if (!capable(CAP_NET_ADMIN))
+		return -EPERM;
 
 	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
@@ -380,6 +429,10 @@ err_region:
 
 void kdg_chardev_exit(void)
 {
+	mutex_lock(&kdg_ops_lock);
+	kdg_stopping = true;
+	mutex_unlock(&kdg_ops_lock);
+	wait_event(kdg_ops_wait, atomic_read(&kdg_active_ops) == 0);
 	cdev_del(&kdg_cdev);
 	unregister_chrdev_region(kdg_devno, 1);
 }

@@ -166,6 +166,14 @@ mbedtls_ms_time_t mbedtls_ms_time(void)
 	return (mbedtls_ms_time_t)(ktime_get_boottime_ns() / NSEC_PER_MSEC);
 }
 
+struct tm *mbedtls_platform_gmtime_r(const mbedtls_time_t *tt, struct tm *out)
+{
+	if (!tt || !out || *tt < 0)
+		return NULL;
+	time64_to_tm((time64_t)*tt, 0, out);
+	return out;
+}
+
 /* ── 3b. 安全清零（MBEDTLS_PLATFORM_ZEROIZE_ALT）────────────────────────
  *
  * 存在理由见 kdnsguard_mbedtls_config.h 第 5 节：上游用 volatile 函数指针

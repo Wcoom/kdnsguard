@@ -177,11 +177,9 @@ int kdg_resolve(const struct kdg_resolve_req *req,
 		goto validate;
 	}
 	if (mk < 0) {
-		/* 合并表满 / waiter 满：**不当成错误**，退化为独立走上游。
-		 * 方案 §7.4 说「达上限显式拒绝」，这里拒绝的是**合并**而不是
-		 * **解析** —— 少一次优化可以，少一次解析不行。 */
-		fl = NULL;
 		g_stat.join_rejected++;
+		kfree(up);
+		return mk;
 	}
 
 	/* ── 5. 上游（只有 owner 或未能参与合并者走到这里）── */
@@ -248,7 +246,7 @@ validate:
 		ttl_s = kdg_wire_cacheable_ttl(&summary, true);
 		cacheable = (ttl_s > 0);
 		if (cacheable) {
-			int pr = kdg_cache_put(&key, up, up_len, now,
+			int pr = kdg_cache_put(&key, up, up_len, kdg_now_ms(),
 					       ttl_s > (U32_MAX / 1000u)
 					       ? U32_MAX : ttl_s * 1000u);
 

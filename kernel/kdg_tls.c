@@ -25,6 +25,7 @@ static mbedtls_ctr_drbg_context	kdg_ctr_drbg;
 static mbedtls_x509_crt		kdg_ca;
 static bool			kdg_ca_created;
 static bool			kdg_tls_ready;
+static unsigned int		kdg_ca_count;
 
 void kdg_tls_lock(void)
 {
@@ -108,9 +109,6 @@ int kdg_tls_global_init(void)
 		return -EIO;
 	}
 
-	if (READ_ONCE(kdg_debug))
-		kdg_psa_probe();
-
 	kdg_tls_ready = true;
 	pr_info("TLS 子系统就绪（CTR_DRBG 已播种，信任锚 %u 张）\n",
 		kdg_tls_ca_count());
@@ -127,9 +125,22 @@ void kdg_tls_global_exit(void)
 	mbedtls_entropy_free(&kdg_entropy);
 	kdg_ca_created = false;
 	kdg_tls_ready = false;
+	WRITE_ONCE(kdg_ca_count, 0);
 }
 
 /* ── 信任锚 ──────────────────────────────────────────────────────────── */
+
+static unsigned int kdg_tls_ca_count_locked(void)
+{
+	unsigned int n = 0;
+	const mbedtls_x509_crt *c;
+
+	for (c = &kdg_ca; c != NULL; c = c->next) {
+		if (c->raw.len > 0)
+			n++;
+	}
+	return n;
+}
 
 int kdg_tls_add_ca(const u8 *data, size_t len)
 {
@@ -163,9 +174,10 @@ int kdg_tls_add_ca(const u8 *data, size_t len)
 	 * 表示全部成功；返回正数表示有 N 张解析失败但仍追加了其余部分 ——
 	 * 后者必须当成失败处理：带着残缺的信任锚去握手，等于把安全性
 	 * 建立在「恰好没被解析到的那张不是关键」这个没有根据的假设上。 */
-	before = kdg_tls_ca_count();
+	kdg_tls_lock();
+	before = kdg_tls_ca_count_locked();
 	ret = mbedtls_x509_crt_parse(&kdg_ca, buf, len + 1);
-	after = kdg_tls_ca_count();
+	after = kdg_tls_ca_count_locked();
 	kfree(buf);
 
 	if (ret != 0) {
@@ -173,35 +185,19 @@ int kdg_tls_add_ca(const u8 *data, size_t len)
 		       ret);
 		/* 已追加的部分无法单张摘除，只能整体作废，避免留下未知状态。 */
 		kdg_tls_clear_ca();
+		kdg_tls_unlock();
 		return -EINVAL;
 	}
+	kdg_tls_unlock();
 	if (after == before)
 		return -EINVAL;
-
+	WRITE_ONCE(kdg_ca_count, after);
 	return (int)(after - before);
 }
 
 unsigned int kdg_tls_ca_count(void)
 {
-	unsigned int n = 0;
-	const mbedtls_x509_crt *c;
-
-	if (!kdg_ca_created)
-		return 0;
-
-	/*
-	 * 只数**真正解析出来的证书**。kdg_ca 本身是链表头节点，即使一张证书
-	 * 都没有它也存在（mbedtls_x509_crt_init 会清零并置 next=NULL），
-	 * 所以不能简单数节点个数 —— 那会让空链返回 1，使 kdg_doh_query() 里
-	 * 「信任锚为空即拒绝」的判断失效，白白发起一次注定失败的握手。
-	 * 判据用 raw.len：解析成功的证书必然有原文。
-	 */
-	for (c = &kdg_ca; c != NULL; c = c->next) {
-		if (c->raw.len > 0)
-			n++;
-	}
-
-	return n;
+	return READ_ONCE(kdg_ca_count);
 }
 
 void kdg_tls_clear_ca(void)
@@ -211,6 +207,7 @@ void kdg_tls_clear_ca(void)
 
 	mbedtls_x509_crt_free(&kdg_ca);
 	mbedtls_x509_crt_init(&kdg_ca);
+	WRITE_ONCE(kdg_ca_count, 0);
 }
 
 /*

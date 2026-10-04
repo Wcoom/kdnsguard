@@ -4,6 +4,9 @@
  */
 #define pr_fmt(fmt)	KBUILD_MODNAME ": cache: " fmt
 
+#ifdef KDG_HOST_TEST
+#include "host_kernel.h"
+#else
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -12,6 +15,7 @@
 #include <linux/hashtable.h>
 #include <linux/atomic.h>
 #include <linux/vmalloc.h>
+#endif
 
 #include "kdg_cache_tab.h"
 
@@ -30,6 +34,7 @@ struct kdg_cache_entry {
 	u32			mem;		/* 本条目的核算占用 */
 	atomic_t		pins;		/* 活跃使用者；>0 时不可回收 */
 	bool			valid;
+	bool			retired;	/* 已摘索引，最后一个 pin 释放后回收 */
 	bool			ref;		/* CLOCK 二次机会位 */
 };
 
@@ -61,21 +66,25 @@ static struct kdg_cache *g_cache;
  */
 static void slot_clear(struct kdg_cache *c, struct kdg_cache_entry *e)
 {
-	if (!e->valid)
+	if (!e->valid && !e->retired)
 		return;
 
-	hlist_del_init(&e->hnode);
+	if (e->valid) {
+		hlist_del_init(&e->hnode);
+		if (c->entries)
+			c->entries--;
+		e->valid = false;
+		e->retired = true;
+	}
+	if (atomic_read(&e->pins))
+		return;
+
 	kfree(e->msg);
 	kfree(e->ttl_offs);
 	e->msg = NULL;
 	e->ttl_offs = NULL;
-
-	/* 无符号减法：即便核算出现偏差也不会回绕成一个巨大的值 */
-	c->mem_bytes = (c->mem_bytes >= e->mem) ? (c->mem_bytes - e->mem) : 0;
-	if (c->entries)
-		c->entries--;
-
-	e->valid = false;
+	c->mem_bytes -= e->mem;
+	e->retired = false;
 	e->ref = false;
 	e->mem = 0;
 	list_add_tail(&e->free_node, &c->free_list);
@@ -276,12 +285,15 @@ out:
 
 void kdg_cache_unpin(void *token)
 {
+	struct kdg_cache *c = g_cache;
 	struct kdg_cache_entry *e = token;
 
-	/* 槽位在 pins>0 期间不会被回收，故此处读到的是稳定的指针；
-	 * 计数本身用原子操作即可，无需持锁。 */
-	if (e)
-		atomic_dec(&e->pins);
+	if (!c || !e)
+		return;
+	spin_lock(&c->lock);
+	if (atomic_dec_and_test(&e->pins) && e->retired)
+		slot_clear(c, e);
+	spin_unlock(&c->lock);
 }
 
 /* ── 插入 ────────────────────────────────────────────────────────────── */
@@ -340,9 +352,9 @@ int kdg_cache_put(const struct kdg_cache_key *key, const u8 *msg,
 	hlist_for_each_entry(e, &c->buckets[hash_min(h, c->hash_bits)], hnode) {
 		if (!e->valid || !kdg_cache_key_eq(&e->key, key))
 			continue;
-		if (atomic_read(&e->pins))
-			break;
 		slot_clear(c, e);
+		if (e->retired)
+			break;
 		list_del_init(&e->free_node);	/* 刚放回空闲链，立刻取回 */
 		slot = e;
 		break;
@@ -356,6 +368,15 @@ int kdg_cache_put(const struct kdg_cache_key *key, const u8 *msg,
 			break;
 		c->evictions++;
 		slot_clear(c, v);
+	}
+
+	if (c->mem_bytes + mem > c->mem_max) {
+		if (slot) {
+			INIT_LIST_HEAD(&slot->free_node);
+			list_add_tail(&slot->free_node, &c->free_list);
+		}
+		ret = -ENOSPC;
+		goto out;
 	}
 
 	/* 3) 取槽位：先要空闲的，没有才淘汰。 */
@@ -428,8 +449,6 @@ void kdg_cache_flush(u32 net_id)
 		 * 方案 §8 要求「每网络/策略视图隔离」。 */
 		if (net_id && e->key.net_id != net_id)
 			continue;
-		if (atomic_read(&e->pins))
-			continue;	/* 正在被使用，本轮跳过 */
 		slot_clear(c, e);
 	}
 	spin_unlock(&c->lock);

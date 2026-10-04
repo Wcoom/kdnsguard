@@ -9,7 +9,7 @@
 
 ---
 
-## 当前状态：P0 完成，P1 达成
+## 当前状态：P0 完成，P1/P2 达成，P3 前置取证完成
 
 | 阶段 | 状态 |
 |---|---|
@@ -17,10 +17,28 @@
 | **内核骨架** 生命周期 / NAT 注册 / DNS 校验器 / UAPI | ✅ 完成并真机验证 |
 | **P1** 内核 TLS + H1 DoH 原型 | ✅ **达成方案 §19 的第一个可验收成果** |
 | **P2** 解析核心：缓存 / 同名合并 / 每调用方配额 / **H2 上游（nghttp2）** | ✅ 完成并真机验证 |
-| P3 全局接管 | ⬜ 未开始 |
+| P3 全局接管 | ⬜ **未开始：前置取证完成，等待代理所有权交接设计** |
 | P4–P7 | ⬜ 未开始 |
 
-### P1 验收：不改全局网络、通过 API 完成经证书验证的 DoH 查询
+### P3 前置取证：代理所有权分层（2026-10-04）
+
+在当前实际运行的 mihomo 1.10.0（BoxProxy，IPv4 `rmnet_data2`）上，以 root 和 uid=2000
+分别发送只针对 `[redacted]` 的探针查询，结果如下：
+
+| 路径 | `getpeername()` / 结果 | 结论 |
+|---|---|---|
+| IPv4 连接 UDP `[redacted]` | `[redacted]`，查询成功 | mihomo eBPF 在 Netfilter LOCAL_OUT 前改写；不是原始目标 |
+| IPv4 TCP `[redacted]` | `[redacted]`，查询成功 | TCP 同样由 socket 层接管，不能只按 UDP 推断 |
+| IPv4 非连接 UDP `sendto()` | `getsockname=[redacted]`，查询成功 | 当前探针未证明该路径被 socket 层改写；须单独协作/回归 |
+| IPv6 UDP `2001:4860:4860::8888:53` | 真实 IPv6 对端，查询成功 | 当前代理路径未接管该 IPv6 目标，存在与 IPv4 不同的所有权 |
+
+kdnsguard 在 `allow_intercept=0` 下加载后观察到 IPv4 53 hook 计数增长、全部
+`NAT_BYPASSED`，IPv6 也可注册 hook；这证明 Netfilter 入口可用，但不证明它能恢复
+已被 eBPF 改写的原始 IPv4 目标。当前不启用全局接管。P3 必须先提供代理侧的
+PREPARE/COMMIT 所有权交接：至少包括 IPv4 TCP/连接 UDP 的 eBPF DNS 放行或由代理
+显式转发到 kdnsguard、非连接 UDP 的明确语义、IPv6 对应策略，以及 kdnsguard 上游
+socket 的旁路身份，避免回环。
+
 
 真机实测（OnePlus 13，内核 `6.6.118-…-abogki20260727-4k`）：
 
@@ -42,8 +60,8 @@ $ kdgctl query github.com
 健康计数 `DOH_QUERIES=8 / DOH_OK=8 / LAST_STATUS=200 / LAST_RTT=150ms`，
 连续多轮稳定；DNS 接管仍**默认关闭**，对系统零行为影响。
 
-链路全程在内核：内核 TCP socket → 内核 TLS（mbedTLS 3.6.7，证书链 + 主机名校验，
-`VERIFY_REQUIRED` 不可关闭）→ 内核 HTTP/1.1 解析 → DoH POST。
+链路全程在内核：内核 TCP socket → 内核 TLS（mbedTLS 3.6.7，证书链、SAN/主机名和有效期校验，
+`VERIFY_REQUIRED` 不可关闭）→ 内核 HTTP/2 或 HTTP/1.1 → DoH POST。
 用户空间只通过 `/dev/kdnsguard` 提交 wire 报文。
 
 ### P2 验收：缓存 / 同名合并 / 配额
@@ -53,7 +71,9 @@ $ kdgctl query github.com
 | 缓存 | 同域名第二次查询 **270 ms → 10 ms**；大小写不同的同一域名命中同一缓存项 |
 | 同名合并 | **100 个并发 → 1 次上游 + 99 个 waiter**（方案 §7.3 逐字口径）|
 | 每调用方配额 | 突发上限设为 10 时，连发 20 次 → 精确 10 成功 / 10 明确 `KDG_ST_EAGAIN` |
-| **H2 上游** | ALPN 协商出 `h2`，DoH 请求经内核 nghttp2 发出；4 个域名全部成功，协议错误 0、流重置 0 |
+| H2/H1 | ALPN 选择 H2，服务端不支持时回落 H1；每次查询建立独立 TLS/TCP 会话，尚未完成方案 §6.3 的持久连接多流连接池 |
+
+H2/H1 实测：真实上游协商 `h2`，DoH 请求经内核 nghttp2 发出，4 个域名成功；当前传输按查询建连和关闭，并由共享 TLS 锁串行，不把它等同于持久连接或并发多流。
 
 **H2/H1 按 ALPN 协商结果自动选择**（方案 §6.3/§6.4）：服务端支持 h2 时走
 nghttp2 的 HTTP/2 客户端，否则回落到内核自写的 HTTP/1.1 路径。
