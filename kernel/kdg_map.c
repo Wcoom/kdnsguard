@@ -55,7 +55,10 @@ struct kdg_map_entry {
 	u8  addr_len;		/* 4 或 16，同时充当地址族的判别式 */
 	u8  nnames;
 	u8  ref;		/* CLOCK 二次机会位 */
-	u8  reserved_;
+	/* 歧义集合满时换掉过某个域名。**必须记下来**：否则调用方拿到 4 个
+	 * 候选却不知道「还有别的」，会把一份不完整的分流依据当成完整的用。
+	 * 没有这一位，响应里的 truncated 就永远是 0，成了死字段。 */
+	u8  lost;
 	u64 expires_ms;		/* 全部名字里最早的到期时间 */
 	u8  addr[16];
 	struct kdg_map_name names[KDG_MAP_MAX_NAMES];
@@ -119,6 +122,7 @@ static void kdg_map_entry_clear(struct kdg_map_entry *e)
 	e->addr_len = 0;
 	e->nnames = 0;
 	e->ref = 0;
+	e->lost = 0;
 	e->expires_ms = 0;
 	memset(e->addr, 0, sizeof(e->addr));
 }
@@ -351,6 +355,7 @@ void kdg_map_record(u32 net_id, u32 profile_gen,
 				    e->names[victim].expires_ms)
 					victim = j;
 			slot = &e->names[victim];
+			e->lost = 1;
 			m->record_rejected++;
 		}
 		slot->len = qname_len;
@@ -415,6 +420,9 @@ int kdg_map_lookup(u32 net_id, u32 profile_gen,
 		spin_unlock(&m->lock);
 		return -ENOENT;
 	}
+	/* 存储侧丢过域名 ⇒ 即使本次 cap 装得下，结果也是不完整的。 */
+	if (e->lost)
+		out->truncated = true;
 	out->count = n;
 	e->ref = 1;
 	m->lookup_hits++;

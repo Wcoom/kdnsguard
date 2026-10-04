@@ -474,6 +474,40 @@ static void test_capacity(void)
 	}
 }
 
+/* ── 4. 歧义集合写满：truncated 必须能反映存储侧丢过域名 ─────────────── */
+static void test_set_full(void)
+{
+	u8 msg[512];
+	struct kdg_addr_ref refs[1];
+	u8 names[KDG_MAP_MAX_NAMES + 3][8];
+	struct kdg_map_result out;
+	struct kdg_map_stats st;
+	struct rrmaker rr[1];
+	size_t len;
+	int i;
+	const u8 ip[4] = { 1, 2, 3, 9 };
+
+	rr[0] = rr_a(300, 1, 2, 3, 9);
+	len = build_resp(msg, "a.example", rr, 1);
+	kdg_wire_collect_addrs(msg, len, refs, 1);
+
+	kdg_map_host_now_ms = 1000;
+	/* 造 KDG_MAP_MAX_NAMES + 3 个不同的名字，逼集合溢出 */
+	for (i = 0; i < KDG_MAP_MAX_NAMES + 3; i++) {
+		names[i][0] = 1;
+		names[i][1] = (u8)('a' + i);
+		names[i][2] = 0;
+		kdg_map_host_now_ms += 1000;
+		kdg_map_record(0, 11, names[i], 3, msg, len, refs, 1);
+	}
+
+	EQ(kdg_map_lookup(0, 11, 4, ip, KDG_MAP_MAX_NAMES, &out), 0, "命中");
+	EQ(out.count, KDG_MAP_MAX_NAMES, "条数被集合宽度限死");
+	CHECK(out.truncated, "存储侧丢过域名 ⇒ truncated 必须为真");
+	kdg_map_get_stats(&st);
+	CHECK(st.record_rejected > 0, "溢出被计数");
+}
+
 int main(void)
 {
 	puts("=== kdg_map 语料测试 ===");
@@ -485,6 +519,7 @@ int main(void)
 	test_ambiguity();
 	test_expiry();
 	test_bounds();
+	test_set_full();
 	test_capacity();
 
 	kdg_map_exit();

@@ -1,0 +1,13 @@
+# kdnsguard 的 Rust 客户端库
+#
+# 刻意**零依赖**：
+#   - 交叉编译到 aarch64-linux-android 时不引入任何第三方 crate，
+#     不依赖 crates.io 可达（本机网络受限），也不给设备端加包袱；
+#   - 方案 §14.2 对客户端的要求只是「接口封装、DNS wire 编解码和返回值转换」，
+#     没有任何需要依赖的场景。
+#
+# edition 2021 而不是 2024：目标设备与工具链版本跨度大时 2021 更稳。
+
+[workspace]
+resolver = "2"
+members = ["kdg-client"]

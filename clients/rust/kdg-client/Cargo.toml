@@ -1,0 +1,17 @@
+[package]
+name = "kdg-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "kdnsguard 的用户空间客户端：/dev/kdnsguard 的接口封装与 DNS wire 编解码"
+license = "GPL-2.0"
+
+[dependencies]
+# 故意为空，见 workspace Cargo.toml 的说明。
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "kdgctl"
+path = "examples/kdgctl.rs"

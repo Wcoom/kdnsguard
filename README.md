@@ -154,6 +154,8 @@ kdnsguard/
     kdg_wire.{h,c}        有界 DNS wire 校验器（方案 §8）
     kdg_sock/tls/http/h2/doh/resolve/cache*/sflight/quota/chardev…
                           上游 DoH 链路与解析编排（P1/P2）
+  clients/
+    rust/kdg-client/      Rust 用户空间客户端库（零依赖，含 UAPI 布局交叉验证）
   tests/                  宿主侧语料测试（ASan/UBSan）
   tools/
     build.sh              构建 kdnsguard.ko（含 kCFI / 未定义符号 / 分配释放配对三道门禁）

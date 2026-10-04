@@ -21,3 +21,6 @@ kernel/mbedtls/
 
 # nghttp2 生成目录（同 kernel/mbedtls/）
 kernel/nghttp2/
+
+# Rust 客户端构建产物
+clients/rust/target/
