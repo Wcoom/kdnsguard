@@ -154,21 +154,131 @@ B 是方案 §12.1 提到的兼容转发路径。**两条路径下「解析全�
 
 ---
 
-## 6. 本轮验证到哪一步
+## 6. 真机验证结果（2026-10-05）
 
-| 项 | 状态 |
-|---|---|
-| 三个平台编译 | ✅ linux / darwin-arm64 / windows-amd64 |
-| `go vet` | ✅ 无告警 |
-| `component/resolver` 单测 | ✅ 12 个（含帧解析、歧义保序、truncated、miss 与 error 区分、nil 安全） |
-| 全仓单测 | ✅ 59 包通过；4 个失败（VMess interop ×3、sudoku HTTPMask）**已在基线提交 `official-20260828` 上用干净 worktree 复现，属既有环境问题**（需要外部 v2ray 二进制），非本次引入 |
-| **真机** | ⬜ **未做**（按约定另开窗口） |
+分三阶段做，每阶段都可单独回滚。**设备最后已完全还原**（核心 md5
+`0d5e82a1…`、配置 md5 `0a82d3f0…`，二者与改动前逐字节一致；模块卸载、0 告警）。
 
-真机要跑的事（下一窗口）：
+### Stage 1（零行为影响）：适配器 ↔ 内核那一层
 
-1. 模块 `insmod allow_intercept=1`，配好 `dns.kernel-trust-file`；
-2. 核心配 `dns.backend: kernel` + `enhanced-mode: redir-host`；
-3. 先试 B 路径（不动 BoxProxy 配置）：`dns.kernel-delegate-ebpf: true`；
-4. 看启动日志里的 `kernel DNS backend active`；
-5. 关键验收：**建立一条只有 IP 没有域名的连接**，确认 `FindHostByIP` 从内核
-   拿到域名（对照 `map_hits` 计数增长），且规则按域名命中。
+只 `SET_TRUST + PREPARE`，不 COMMIT、不打开 NAT 拦截。跑 `resolver` 包的真机探针
+（宿主上自动 skip）：
+
+```
+解析 example.com   -> 172.66.147.243   （经 Go 适配器走内核 DoH）
+解析 www.baidu.com -> 36.152.44.93
+反查 172.66.147.243 -> example.com  ✓
+反查 36.152.44.93   -> www.baidu.com ✓
+enhancer stats: lookups=3 hits=2 misses=1 errors=0 ambiguous=0
+内核计数:       map_entries=4 map_hits=2 map_misses=1
+```
+
+**Go 侧与内核侧逐项对上**，说明手写偏移解析与内核真实产出的帧完全一致 —— 这是
+宿主单测测不到的一层（宿主只能验证「解析器对我自己构造的帧」）。
+
+### Stage 2（短暂接管）：完整所有权事务
+
+`PREPARE → 读代际 → COMMIT → 接管态解析+反查 → DISABLE`，**跑两轮**（可重复性）：
+`generation=2` → COMMIT 成功 → 解析 `example.com` → 反查回域名 → DISABLE →
+`ownership=0 / listener_ready=0` → 手机 DNS 立刻回到原链路。
+
+### Stage 3a：换真实核心二进制（配置不动）
+
+用 NDK r29 + `with_gvisor with_ebpf` 编出 `1.10.0-kdgp4`，按 boxp 既有下发约定
+（同目录临时文件 + 原子 rename，保留 `root:net_admin` / 6755 / `app_data_file`）
+替换 `files/box/bin/mihomo`。核心正常起来、流量照常按规则分流、0 告警。
+
+### Stage 3b：真正启用内核后端 —— **P4 的核心验收**
+
+配置改为 `enhanced-mode: redir-host` + `dns.backend: kernel` +
+`kernel-trust-file` + `kernel-delegate-ebpf: true`，模块以 `allow_intercept=1` 加载。
+
+```
+mihomo 日志: kernel DNS backend active: 53 ownership handed to the kernel (device=/dev/kdnsguard)
+内核 health: ownership=2 (ACTIVE)  nat_seen=76  nat_redirected=72  map_entries=78  doh_ok=37
+```
+
+**决定性的一条**：从手机发一个**纯 IP、无域名**的连接
+
+```
+$ busybox nc 172.66.147.243 443          # 该 IP 就是 example.com 解析出来的
+mihomo 日志: [TCP] 127.0.0.1:34657(busybox) --> example.com:443 match Match using 漏网之鱼
+内核计数:    map_hits 0 -> 2
+```
+
+**连接被还原成了域名**，走的正是 `tunnel.needLookupIP()` → `KernelEnhancer` →
+内核映射表 —— 这就是方案 §12.2 要证明的东西。若没有它，这一行日志的 `-->`
+后面会是一个裸 IP，域名规则全部失效。
+
+> 观测：真实流量里 `map_misses` 远多于 `map_hits`（数百 vs 2）。这是**正常混合**：
+> 大量连接的目标 IP（代理节点、应用自己缓存的 IP、字面 IP）本就不在映射表里，
+> 那些连接的域名由嗅探补齐；两者互为兜底。命中率取决于应用"先解析再连接"的
+> 比例，不是缺陷指标。
+
+---
+
+## 7. 🔴 只有真机能抓到的两个 bug（都已修，并加锁）
+
+### 7.1 `KDG_CMD_GET_HEALTH` 的编号写错
+
+```
+读代际: kdnsguard GET_HEALTH: netlink receive: operation not supported
+```
+
+编号是 **enum 位置 − 1**：`GET_HEALTH` 是 **11**，而我写成了 10 —— 那是
+`GET_STATS`，内核没注册它的处理器，generic netlink 直接回 `-EOPNOTSUPP`。
+
+**编译、`go vet`、宿主单测全都不会报。** 这正是 CI 之外必须有真机窗口的理由。
+
+修法不只是改数字：新增 `kernel_uapi_test.go`，**从 C 头解析 `enum kdg_genl_cmd` /
+`kdg_genl_attr` / `kdg_ioctl_op` 并逐项比对**（另外用 `cc` 编译 C 头比对
+`sizeof`/`offsetof`）。反向注入验证过：把编号改回 10，测试立刻报
+`KDG_CMD_GET_HEALTH: 客户端用 10，UAPI 头是 11`。
+
+### 7.2 `Start()` 与 `Commit()` 用了**不同**的事务号
+
+```
+COMMIT: kdnsguard transaction 3: netlink receive: stale file handle   (-ESTALE)
+```
+
+两处各自调了一次 `time.Now().UnixNano()`，内核判 `tx != transaction_id` 直接拒绝。
+**这不是测试的问题 —— `executor.go` 里是同一个写法，真实路径下 COMMIT 必然失败。**
+
+根因是接口让调用方重复传一个已经记录过的值。改成 `Commit()` **不带参数**、用
+`Start()` 记下的那一个：把「能传错」这件事从接口上消掉。
+
+---
+
+## 8. 从还原路径推出来的一个生命周期缺口（已修并真机验证）
+
+ownership 是**进程级**状态：代理进程被 kill / 重启时没有任何人发 `DISABLE`，
+于是 53 的所有权一直留在内核手里，而下一个进程的 `PREPARE` 会撞 `-EBUSY` ——
+**一次核心重启之后就再也接管不了，只能靠 `rmmod` 清场。**
+
+两处修法，都已在真机上验证：
+
+1. `Start()` 遇到 `-EBUSY` 时：记一条 Warn，显式 `DISABLE`，**再重试一次 PREPARE**。
+   合法的 owner 只可能是本模块的上一个进程（否则走不到这里）。
+2. `Close()` 从「只在 committed 时 DISABLE」改为「只要 Start 成功过就 DISABLE」
+   —— **PREPARE 成功但 COMMIT 失败**这一档很容易被漏掉：那时已建好 listener、
+   占着 PREPARED 状态，只把 Go 侧引用置 nil 会让 listener 一直开着。
+
+验证方式：先跑一次「COMMIT 后故意不交还」模拟崩溃（内核 `ownership=2`），
+再跑一次正常流程 —— 第二次的 PREPARE 只可能走 EBUSY 恢复路径，它成功了，
+结束时 `ownership=0 / listener_ready=0`。
+
+顺带修了内核侧的一处**诊断缺口**：`GET_HEALTH` 原本从 `intercept_enabled` 反推
+ownership，把 `PREPARED` 折叠成了 `NONE`。现在如实上报 `kdg_cfg.ownership`
+本身 —— 「listener 已建好但没人有资格 COMMIT」恰恰是排障时最需要看见的那一档。
+
+---
+
+## 9. 仍然未覆盖
+
+1. **eBPF 放行路径（§5 的 A 路径）** 仍卡在 BoxProxy 源码不可得；本轮走的是
+   B 路径（delegate）。两条路径下「解析全在内核」相同，差别只在谁转发报文。
+2. **长时间浸泡**：本轮每阶段都是分钟级窗口，没有跑"日常使用一整天"。
+3. **FakeIP**：本轮把 `enhanced-mode` 临时改为 `redir-host`；长期是否放弃
+   fake-ip 需要产品决策（方案 §12.2 的立场是首期返回真实 IP）。
+4. **映射命中率的调参**：`map_misses` 占比高是正常的（见 §6 的观测），但
+   「多少算好」需要真实使用数据来定。

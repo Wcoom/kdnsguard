@@ -208,9 +208,13 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 
 	/* 所有权如实上报：§10.1 要求把「已由内核策略接管」显式反映出去，
 	 * 而不是让设置页停留在 strict 却实际查了别的账户。 */
+	/* 如实上报 kdg_cfg.ownership**本身**，不要从 intercept_enabled 反推。
+	 * 反推会把 PREPARED 折叠成 NONE —— 而 PREPARED 恰恰是排障时最需要看见的
+	 * 那一档（「listener 已经建好但没有人有资格 COMMIT」）。折叠之后，运维
+	 * 看到的「未接管」既可能是真的没有后端，也可能是卡在 PREPARED，
+	 * 两者的处置完全不同。 */
 	if (nla_put_u32(msg, KDG_HA_OWNERSHIP,
-			READ_ONCE(kdg_cfg.intercept_enabled) ? KDG_OWN_ACTIVE
-							     : KDG_OWN_NONE) ||
+			READ_ONCE(kdg_cfg.ownership)) ||
 	    nla_put_u8(msg, KDG_HA_UPSTREAM_OK, 0) ||
 	    nla_put_u32(msg, KDG_HA_CONSECUTIVE_FAILURES, 0) ||
 	    nla_put_u32(msg, KDG_HA_BACKOFF_UNTIL_MS, 0) ||
