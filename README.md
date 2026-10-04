@@ -17,10 +17,12 @@
 | **内核骨架** 生命周期 / NAT 注册 / DNS 校验器 / UAPI | ✅ 完成并真机验证 |
 | **P1** 内核 TLS + H1 DoH 原型 | ✅ **达成方案 §19 的第一个可验收成果** |
 | **P2** 解析核心：缓存 / 同名合并 / 每调用方配额 / **H2 上游（nghttp2）** | ✅ 完成并真机验证 |
+| **P2 补齐：方案 §6.3 的 H2 持久连接池** | ✅ 已实现并宿主验证（[`docs/P2-connection-pool.md`](docs/P2-connection-pool.md)）；**尚无真机验证** |
 | **P3** 全局接管（双栈 NAT / 代理所有权交接 / 泄漏与失败策略） | ✅ **已在受控窗口内真机接管并验证**，见 [`docs/P3-takeover.md`](docs/P3-takeover.md) |
 | **P4** 核心 DNS 移交 | 🟡 进行中：内核侧 IP↔域名 关联表 + Rust 客户端库已落地并真机验证（[`docs/P4-mapping.md`](docs/P4-mapping.md)）；**代理侧适配器已实现但未真机验证**（[`docs/P4-adapters.md`](docs/P4-adapters.md)） |
 | **P6** 功耗定型 | 🟡 第一轮测量完成（[`docs/P6-measurements.md`](docs/P6-measurements.md)）：**能耗不可测**（无功率仪 + 手机在充电），但测出并量化了上游连接池缺失的代价；见下 |
-| P5、P7 | ⬜ 未开始 |
+| **P5** 安卓平台对齐 | 🟡 **范围已缩小**（[`docs/P5-scope.md`](docs/P5-scope.md)）：澄清之后不再需要 AOSP DnsResolver/APEX 状态桥，只剩非 root 设备访问、网络事件驱动事务、常驻交付形态三类工程项；⛔ 未开始 |
+| P7 全内核 H3 | ⬜ 未开始 |
 
 **接管默认关闭**：`ownership=0`、listener 不启动、NAT hook 只计数不改写。
 启用路径是 `PREPARE → COMMIT` 的 ownership 事务（且模块须以 `allow_intercept=1`
@@ -86,6 +88,12 @@
 「尚未完成持久连接多流」，没有数字说明那意味着什么。P6 给出了数字，并把
 它列为最高优先级的下一步。
 
+**该缺陷已修复**（2026-10-05，[`docs/P2-connection-pool.md`](docs/P2-connection-pool.md)）：
+建连/握手/收发搬进一个驱动线程，调用方只入队并等自己的完成；H2 会话常驻、多流并行。
+宿主并发测试 447 项检查全绿，另有一份**反向注入审计**逐条证明这些用例抓得住
+对应的缺陷。**但尚未真机复测** —— 上表里的四个红色数字在 P6 第二轮之前
+不应被引用为「已改善」。
+
 ### P4 第一步：IP ↔ 域名 关联表（2026-10-05，详见 `docs/P4-mapping.md`）
 
 DNS 挪进内核后代理就失去了它原先由 DNS 应答触发的域名/IP 映射，方案 §12.2
@@ -136,9 +144,12 @@ $ kdgctl query github.com
 | 缓存 | 同域名第二次查询 **270 ms → 10 ms**；大小写不同的同一域名命中同一缓存项 |
 | 同名合并 | **100 个并发 → 1 次上游 + 99 个 waiter**（方案 §7.3 逐字口径）|
 | 每调用方配额 | 突发上限设为 10 时，连发 20 次 → 精确 10 成功 / 10 明确 `KDG_ST_EAGAIN` |
-| H2/H1 | ALPN 选择 H2，服务端不支持时回落 H1；每次查询建立独立 TLS/TCP 会话，尚未完成方案 §6.3 的持久连接多流连接池 |
+| H2/H1 | ALPN 选择 H2，服务端不支持时回落 H1。**该行的「每次建连」描述已过期**，见下方连接池 |
 
-H2/H1 实测：真实上游协商 `h2`，DoH 请求经内核 nghttp2 发出，4 个域名成功；当前传输按查询建连和关闭，并由共享 TLS 锁串行，不把它等同于持久连接或并发多流。
+H2/H1 实测：真实上游协商 `h2`，DoH 请求经内核 nghttp2 发出，4 个域名成功。
+（这条验收是在**每查询一条连接**时期的记录，保留作为「H2 链路本身能通」的
+证据；连接复用与并发多流是后来补的，见
+[`docs/P2-connection-pool.md`](docs/P2-connection-pool.md)。）
 
 **H2/H1 按 ALPN 协商结果自动选择**（方案 §6.3/§6.4）：服务端支持 h2 时走
 nghttp2 的 HTTP/2 客户端，否则回落到内核自写的 HTTP/1.1 路径。
@@ -178,11 +189,20 @@ kdnsguard/
     kdg_map.{h,c}         IP ↔ 域名 有界关联表（方案 §12.2，双态可编译）
     kdg_genl.c            管理面 Generic Netlink 族
     kdg_wire.{h,c}        有界 DNS wire 校验器（方案 §8）
-    kdg_sock/tls/http/h2/doh/resolve/cache*/sflight/quota/chardev…
-                          上游 DoH 链路与解析编排（P1/P2）
+    kdg_sock/tls/http/doh.c
+                          内核 socket / TLS 会话 / H1 兼容路径 / 传输选择
+    kdg_h2stream.h        一条 H2 流的收集状态（只依赖 kdg_base.h）
+    kdg_h2.{h,c}          H2 **会话**：建会话、提交多条流、喂字节、刷帧
+    kdg_upstream.{h,c}    一条上游连接（TCP+TLS+ALPN+H2）的不透明句柄
+    kdg_pool.{h,c}        持久连接池：槽位、排队、超期取消、空闲关闭
+    kdg_resolve/cache*/sflight/quota/chardev…
+                          解析编排与缓存、同名合并、配额、字符设备
   clients/
     rust/kdg-client/      Rust 用户空间客户端库（零依赖，含 UAPI 布局交叉验证）
   tests/                  宿主侧语料测试（ASan/UBSan）
+    test_pool.c           连接池并发测试（真 pthread + ASan，跑 kdg_pool.c 原文）
+    hostlinux/            让 kdg_pool.c 在宿主上编译的一组 <linux/*.h> 替身
+    inject_pool_defects.py 反向注入审计：证明上面那些用例抓得住对应缺陷（不是空闸）
   tools/
     build.sh              构建 kdnsguard.ko（含 kCFI / 未定义符号 / 分配释放配对三道门禁）
     build-kdgctl.sh       构建 freestanding aarch64 诊断客户端
@@ -191,7 +211,8 @@ kdnsguard/
     manifest.sh           生成 kernel_build_manifest（方案 §15）
   third_party/            依赖锁定与授权审计
   clients/rust/traces/    P6 查询轨迹（确定性生成、脱敏）
-  docs/                   P0 结论、P3 接管验证、P4 映射表与 panic 复盘、P4 代理适配器、P6 测量
+  docs/                   P0 结论、P3 接管验证、P4 映射表与 panic 复盘、P4 代理适配器、
+                          P2 连接池、P5 范围、P6 测量
 ```
 
 ---
