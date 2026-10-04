@@ -18,7 +18,7 @@
 | **P1** 内核 TLS + H1 DoH 原型 | ✅ **达成方案 §19 的第一个可验收成果** |
 | **P2** 解析核心：缓存 / 同名合并 / 每调用方配额 / **H2 上游（nghttp2）** | ✅ 完成并真机验证 |
 | **P3** 全局接管（双栈 NAT / 代理所有权交接 / 泄漏与失败策略） | ✅ **已在受控窗口内真机接管并验证**，见 [`docs/P3-takeover.md`](docs/P3-takeover.md) |
-| **P4** 核心 DNS 移交 | 🟡 进行中：**内核侧 IP↔域名 关联表已落地并真机验证**（[`docs/P4-mapping.md`](docs/P4-mapping.md)）；Rust 客户端库、代理适配器未开始 |
+| **P4** 核心 DNS 移交 | 🟡 进行中：内核侧 IP↔域名 关联表 + Rust 客户端库已落地并真机验证（[`docs/P4-mapping.md`](docs/P4-mapping.md)）；**代理侧适配器已实现但未真机验证**（[`docs/P4-adapters.md`](docs/P4-adapters.md)） |
 | P5–P7 | ⬜ 未开始 |
 
 **接管默认关闭**：`ownership=0`、listener 不启动、NAT hook 只计数不改写。
@@ -164,7 +164,7 @@ kdnsguard/
     kdgctl.c / netprobe.c
     manifest.sh           生成 kernel_build_manifest（方案 §15）
   third_party/            依赖锁定与授权审计
-  docs/                   P0 结论、P3 接管验证、P4 映射表与 panic 复盘
+  docs/                   P0 结论、P3 接管验证、P4 映射表与 panic 复盘、P4 代理适配器
 ```
 
 ---
@@ -229,6 +229,9 @@ PREROUTING 只对**已成功绑定 listener 的入接口**接管，名单由模�
 ```bash
 # 宿主侧单元测试（需要 gcc；带 ASan/UBSan）
 cd tests && make run
+
+# Rust 客户端库（宿主单测 + UAPI 布局交叉验证）
+cd clients/rust && cargo test --offline
 
 # 内核模块（需先构建过 oplus13/android_kernel_common_oneplus_sm8750/out）
 bash tools/build.sh
