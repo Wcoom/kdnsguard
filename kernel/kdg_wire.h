@@ -214,6 +214,42 @@ int kdg_wire_get_answer_rr(const u8 *msg, size_t len, unsigned int idx,
 int kdg_wire_collect_ttl_offs(const u8 *msg, size_t len,
 			      u16 *offs, u16 offs_cap);
 
+/*
+ * 一条 A/AAAA 记录的定位信息。只记值与 TTL，**不复制 rdata**，也不记 RR 的
+ * owner 名 —— 域名/IP 映射要的是「调用方问的那个名字」，而不是 CNAME 链末端
+ * 的名字（见 kdg_wire_collect_addrs 的注释）。
+ */
+struct kdg_addr_ref {
+	u16 type;		/* KDG_RRTYPE_A / KDG_RRTYPE_AAAA */
+	u16 reserved_;
+	u32 ttl;		/* 原始 TTL（秒） */
+	u16 rdata_off;		/* rdata 在报文中的偏移 */
+	u16 rdlen;		/* 4 或 16 */
+};
+
+/* 单次收集的地址上限。答案区多于这个数量时**整体拒绝**（返回 KDG_W_ECOUNT）
+ * 而不是截断 —— 静默丢弃一部分地址会让「这个域名解析到了哪些 IP」这个事实
+ * 变得不完整，调用方据此建立的映射会缺项。 */
+#define KDG_WIRE_MAX_ADDRS	16
+
+/*
+ * 收集响应**答案区**里的全部 A/AAAA 记录。
+ *
+ * ⚠️ 刻意**不**看 RR 的 owner 名。递归解析器返回的是整条链，典型形态是
+ *
+ *     www.example.com.  CNAME  cdn.example.net.
+ *     cdn.example.net.  A      1.2.3.4
+ *
+ * 而调用方（代理的域名路由）关心的是「应用问的那个名字」。若按 owner 名记录，
+ * 映射会变成 1.2.3.4 → cdn.example.net，应用按 www.example.com 分流就落空。
+ * 所以这里只取值，由调用方统一挂到它自己的 qname 上。
+ *
+ * 不做递归/不跟随 NS 授权段：答案区之外的记录不是这次查询的答案。
+ * 返回值：写入的条数（>=0），或负的 KDG_W_E*（KDG_W_ECOUNT 表示多于 cap）。
+ */
+int kdg_wire_collect_addrs(const u8 *msg, size_t len,
+			   struct kdg_addr_ref *out, u16 cap);
+
 /* 该响应是否可缓存，以及可缓存多久（秒）。0 表示不可缓存。
  * 覆盖 §8 的全部规则：TTL=0、SERVFAIL、截断、超大、非 NOERROR/NXDOMAIN。 */
 u32 kdg_wire_cacheable_ttl(const struct kdg_summary *s, bool allow_negative);

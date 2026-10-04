@@ -18,7 +18,8 @@
 | **P1** 内核 TLS + H1 DoH 原型 | ✅ **达成方案 §19 的第一个可验收成果** |
 | **P2** 解析核心：缓存 / 同名合并 / 每调用方配额 / **H2 上游（nghttp2）** | ✅ 完成并真机验证 |
 | **P3** 全局接管（双栈 NAT / 代理所有权交接 / 泄漏与失败策略） | ✅ **已在受控窗口内真机接管并验证**，见 [`docs/P3-takeover.md`](docs/P3-takeover.md) |
-| P4–P7 | ⬜ 未开始 |
+| **P4** 核心 DNS 移交 | 🟡 进行中：**内核侧 IP↔域名 关联表已落地并真机验证**（[`docs/P4-mapping.md`](docs/P4-mapping.md)）；Rust 客户端库、代理适配器未开始 |
+| P5–P7 | ⬜ 未开始 |
 
 **接管默认关闭**：`ownership=0`、listener 不启动、NAT hook 只计数不改写。
 启用路径是 `PREPARE → COMMIT` 的 ownership 事务（且模块须以 `allow_intercept=1`
@@ -58,6 +59,24 @@
 **明确未覆盖**：真实 Wi-Fi↔蜂窝切换未做（当前手机是本机唯一出口，切换会切断验证
 通路）；netId/fwmark 多网络隔离未实现；上游仍是 IPv4 bootstrap。理由与细节见
 `docs/P3-takeover.md` §6。
+
+### P4 第一步：IP ↔ 域名 关联表（2026-10-05，详见 `docs/P4-mapping.md`）
+
+DNS 挪进内核后代理就失去了它原先由 DNS 应答触发的域名/IP 映射，方案 §12.2
+要求内核提供这份有界关联。已落地内核侧：512 槽 / 316 KiB、按
+`net_id + profile_gen + 地址` 索引、**一个 IP 保留一组域名**（歧义不丢）、
+TTL 夹取、惰性过期、零定时器，`KDG_OP_MAP_LOOKUP` 反查接口。真机验证：
+条目数与答案区 A 记录逐条对上、TTL 递减、`mem_bytes` 与算术精确一致、
+`rmmod` 干净、0 告警。
+
+> ⚠️ **这一步先撞了一次内核 panic（手机重启），复盘在 `docs/P4-mapping.md` §3。**
+> 一句话：`buckets`/`slots` 是 `kvcalloc` 来的，我却用 `kfree` 释放 —— 316 KiB
+> 必然落在 vmalloc 区，`kfree` 打 vmalloc 地址直接 panic。**宿主 ASan 抓不到
+> 这一类**（host shim 把 `kfree`/`kvfree` 都映射成 `free`），故补了一道
+> **构建期分配/释放配对门禁**。那道门禁的第一版还是**空闸**：它只查「同文件有
+> 没有正确的 `kvfree`」，而改错其中一处时另一处仍在，照样放行 —— 靠**反向注入
+> 测试**才发现，现已改成同时检查「有没有错误的释放」。
+
 
 
 真机实测（OnePlus 13，内核 `6.6.118-…-abogki20260727-4k`）：
@@ -130,19 +149,20 @@ kdnsguard/
     kdg_main.c            生命周期、per-netns 状态、模块参数
     kdg_nat.c             Netfilter/NAT 接管点（方案 §5.2）
     kdg_listener.c        loopback + 客户端入口 listener、ownership 事务的执行体
+    kdg_map.{h,c}         IP ↔ 域名 有界关联表（方案 §12.2，双态可编译）
     kdg_genl.c            管理面 Generic Netlink 族
     kdg_wire.{h,c}        有界 DNS wire 校验器（方案 §8）
     kdg_sock/tls/http/h2/doh/resolve/cache*/sflight/quota/chardev…
                           上游 DoH 链路与解析编排（P1/P2）
   tests/                  宿主侧语料测试（ASan/UBSan）
   tools/
-    build.sh              构建 kdnsguard.ko
+    build.sh              构建 kdnsguard.ko（含 kCFI / 未定义符号 / 分配释放配对三道门禁）
     build-kdgctl.sh       构建 freestanding aarch64 诊断客户端
     build-netprobe.sh     构建 DNS 路径探针（判「谁抢到了 53」）
     kdgctl.c / netprobe.c
     manifest.sh           生成 kernel_build_manifest（方案 §15）
   third_party/            依赖锁定与授权审计
-  docs/                   P0 结论、P3 接管验证记录与取证
+  docs/                   P0 结论、P3 接管验证、P4 映射表与 panic 复盘
 ```
 
 ---

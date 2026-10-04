@@ -175,6 +175,106 @@ static int kdg_status_from_errno(int err)
 	}
 }
 
+/* ── MAP_LOOKUP：IP → 候选域名集合（方案 §12.2）───────────────────────── */
+
+#define KDG_ALIGN4(x)		(((x) + 3u) & ~3u)
+
+/* 响应体的静态上界：头 + 4 个 item（各带一个最长域名）。有这个界才能用
+ * 一次 kmalloc 交出整帧，不必边写边扩容。 */
+#define KDG_MAP_BODY_MAX						\
+	(sizeof(struct kdg_map_result_v1) +				\
+	 KDG_MAP_MAX_ITEMS * (sizeof(struct kdg_map_item_v1) +		\
+			      KDG_MAP_NAME_MAX + 4))
+
+/*
+ * 反查的实现。addr 是裸地址（4 或 16 字节）。
+ *
+ * 「没有关联」**不是错误**：调用方拿一个 IP 来问，正常的答案之一就是「不知道」。
+ * 因此命中与未命中都走 KDG_ST_OK，靠 body 里的 count 区分 —— 若把未命中做成
+ * 错误码，调用方就没法把「这个 IP 没记录」与「查询功能本身坏了」分开，而这两
+ * 者的处置完全不同（前者回退到 SNI 嗅探，后者要报故障）。
+ */
+static int kdg_do_map_lookup(struct kdg_file_ctx *ctx,
+			     const struct kdg_req_v1 *req,
+			     const u8 *addr, size_t alen)
+{
+	struct kdg_map_result res;
+	struct kdg_map_result_v1 mh;
+	struct kdg_resp_v1 hdr;
+	u8 *body = NULL;
+	size_t body_len, off, total;
+	u32 generation = READ_ONCE(kdg_cfg.generation);
+	u8 i;
+	int ret;
+
+	if (alen != 4 && alen != 16)
+		return -EINVAL;
+
+	body = kmalloc(KDG_MAP_BODY_MAX, GFP_KERNEL);
+	if (!body)
+		return -ENOMEM;
+
+	ret = kdg_map_lookup(0, generation, (u8)alen, addr,
+			     KDG_MAP_MAX_ITEMS, &res);
+	if (ret == -ENOENT) {
+		memset(&res, 0, sizeof(res));
+		res.profile_gen = generation;
+		ret = 0;
+	} else if (ret) {
+		kfree(body);
+		return ret;
+	}
+
+	memset(&mh, 0, sizeof(mh));
+	mh.profile_generation = res.profile_gen;
+	mh.actual_network = 0;			/* 本期恒 init_net */
+	mh.count = res.count;
+	mh.truncated = res.truncated ? 1 : 0;
+	memcpy(body, &mh, sizeof(mh));
+	off = sizeof(mh);
+
+	for (i = 0; i < res.count; i++) {
+		struct kdg_map_item_v1 it;
+
+		/* count 已由 kdg_map_lookup 按 cap 限死，这里再判一次是为了让
+		 * 「body 上界」这个假设在代码里显式可查，而不是靠远端不变式。 */
+		if (off + sizeof(it) + KDG_ALIGN4(res.lens[i]) > KDG_MAP_BODY_MAX)
+			break;
+		memset(&it, 0, sizeof(it));
+		it.len = res.lens[i];
+		it.kind = 0;			/* DNS 名（wire） */
+		it.ttl_ms = res.ttl_ms[i];
+		memcpy(body + off, &it, sizeof(it));
+		off += sizeof(it);
+		memcpy(body + off, res.names[i], res.lens[i]);
+		off += KDG_ALIGN4(res.lens[i]);
+	}
+	body_len = off;
+
+	total = sizeof(hdr) + body_len;
+	ctx->resp = kmalloc(total, GFP_KERNEL);
+	if (!ctx->resp) {
+		kfree(body);
+		return -ENOMEM;
+	}
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.abi_version = KDG_ABI_VERSION;
+	hdr.status = KDG_ST_OK;
+	hdr.errno_hint = 0;
+	hdr.request_cookie = req->request_cookie;
+	hdr.actual_network = 0;
+	hdr.generation = generation;
+	hdr.response_len = (u32)body_len;
+	memcpy(ctx->resp, &hdr, sizeof(hdr));
+	memcpy(ctx->resp + sizeof(hdr), body, body_len);
+	ctx->resp_len = total;
+	ctx->resp_off = 0;
+	ctx->have_resp = true;
+
+	kfree(body);
+	return (int)req->total_len;
+}
+
 /* ── write：提交查询 ─────────────────────────────────────────────────── */
 
 static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
@@ -215,9 +315,9 @@ static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
 		ret = -EPROTO;
 		goto out;
 	}
-	if (req.opcode != KDG_OP_QUERY) {
-		/* CANCEL / MAP_LOOKUP / GET_HEALTH 在 P1 未实现。
-		 * 明确返回「不支持」而不是静默成功。 */
+	if (req.opcode != KDG_OP_QUERY && req.opcode != KDG_OP_MAP_LOOKUP) {
+		/* CANCEL / GET_HEALTH 在这条通道上未实现。明确返回「不支持」
+		 * 而不是静默成功。 */
 		ret = -EOPNOTSUPP;
 		goto out;
 	}
@@ -239,8 +339,17 @@ static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
 		goto out;
 	}
 	qlen = req.query_len;
-	if (qlen == 0 || qlen > KDG_MAX_WIRE_MSG ||
-	    sizeof(req) + qlen > count) {
+	if (sizeof(req) + qlen > count) {
+		ret = -EMSGSIZE;
+		goto out;
+	}
+	if (req.opcode == KDG_OP_MAP_LOOKUP) {
+		/* 反查的载荷是**裸地址**，长度即地址长度。 */
+		if (qlen != 4 && qlen != 16) {
+			ret = -EMSGSIZE;
+			goto out;
+		}
+	} else if (qlen == 0 || qlen > KDG_MAX_WIRE_MSG) {
 		ret = -EMSGSIZE;
 		goto out;
 	}
@@ -266,7 +375,9 @@ static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
 		goto unlock;
 	}
 
-	ret = kdg_do_query(ctx, &req, kbuf + sizeof(req), qlen);
+	ret = (req.opcode == KDG_OP_MAP_LOOKUP)
+		? kdg_do_map_lookup(ctx, &req, kbuf + sizeof(req), qlen)
+		: kdg_do_query(ctx, &req, kbuf + sizeof(req), qlen);
 
 unlock:
 	mutex_unlock(&ctx->lock);

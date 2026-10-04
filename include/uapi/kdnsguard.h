@@ -144,6 +144,13 @@ enum kdg_health_attr {
 	KDG_HA_NAT_SPORT53,		/* u64：**新**连接的源端口 53（只计数，不接管）*/
 	KDG_HA_CLIENT_IFACES,		/* u32：已建 listener 的客户端入口数 */
 	KDG_HA_LISTENER_READY,		/* u8：loopback listener 是否就绪 */
+	/* P4 第一步：IP ↔ 域名 关联表（方案 §12.2）。 */
+	KDG_HA_MAP_ENTRIES,		/* u32：当前有效关联数 */
+	KDG_HA_MAP_HITS,		/* u64 */
+	KDG_HA_MAP_MISSES,		/* u64 */
+	KDG_HA_MAP_EVICTIONS,		/* u32 */
+	KDG_HA_MAP_REJECTED,		/* u32：超长名 / 歧义集合满 / 无槽位 */
+	KDG_HA_MAP_MEM_BYTES,		/* u32 */
 	__KDG_HA_MAX,
 };
 #define KDG_HA_MAX (__KDG_HA_MAX - 1)
@@ -203,6 +210,32 @@ struct kdg_health_v1 {
 	__u32 backoff_until_ms;		/* 0 表示未退避 */
 	__u32 last_errno;		/* 最近失败 errno，0 表示无 */
 	__u32 reserved0[6];
+};
+
+/* ── MAP_LOOKUP 的响应体（方案 §12.2「映射查询接口」）──────────────────
+ *
+ * 方向只有**反查**：调用方拿一个连接的真实目的 IP 来问「它可能是哪些域名」。
+ * 代理手上的输入就是 IP（DNS 挪进内核之后，它不再有 DNS 应答可看），所以
+ * 这是它唯一能发起的查询；正查（域名→IP）本期没有消费者，不做。
+ *
+ * 请求形态不动 `struct kdg_req_v1`：opcode = KDG_OP_MAP_LOOKUP 时，
+ * query_wire 就是**裸地址**（4 或 16 字节），query_len 即地址长度。
+ * 响应体紧随 `struct kdg_resp_v1`，布局如下。
+ */
+#define KDG_MAP_MAX_ITEMS	4	/* 单个 IP 最多带回多少个候选域名 */
+
+struct kdg_map_item_v1 {
+	__u16 len;		/* 载荷字节数 */
+	__u16 kind;		/* 0 = DNS 名（wire，未压缩）；4/16 = 裸地址 */
+	__u32 ttl_ms;		/* 该候选还剩多少毫秒可用 */
+	/* 载荷紧随其后，按 4 字节对齐补齐 */
+};
+
+struct kdg_map_result_v1 {
+	__u32 profile_generation;	/* provenance：关联建立时的 profile 代际 */
+	__u32 actual_network;		/* 本期恒 0 = init_net */
+	__u32 count;			/* 实际带回的 item 数 */
+	__u32 truncated;		/* 非 0 = 还有候选未装下，不要当成"就这几个" */
 };
 
 /* ── 查询面：受控字符设备 /dev/kdnsguard ──────────────────────────────── */

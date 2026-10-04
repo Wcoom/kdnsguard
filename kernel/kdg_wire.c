@@ -568,6 +568,56 @@ int kdg_wire_match_response(const u8 *req, size_t reqlen,
 
 /* ── 可缓存性与 TTL ───────────────────────────────────────────────────── */
 
+int kdg_wire_collect_addrs(const u8 *msg, size_t len,
+			   struct kdg_addr_ref *out, u16 cap)
+{
+	struct kdg_summary s;
+	struct kdg_rr_ref rr;
+	size_t off;
+	u16 i, n = 0;
+	int ret;
+
+	if (!msg || !out)
+		return KDG_W_EARG;
+
+	/* 先整体校验一遍再定位：与 kdg_wire_get_answer_rr 同一条纪律 ——
+	 * 不在未校验的报文上做任何偏移计算。 */
+	ret = kdg_wire_parse_response(msg, len, &s);
+	if (ret < 0)
+		return ret;
+
+	off = KDG_DNS_HDR_LEN + s.question_bytes;
+	for (i = 0; i < s.ancount; i++) {
+		u16 want;
+
+		ret = kdg_scan_rr(msg, len, &off, &rr, NULL);
+		if (ret < 0)
+			return ret;
+
+		if (rr.type == KDG_RRTYPE_A)
+			want = 4;
+		else if (rr.type == KDG_RRTYPE_AAAA)
+			want = 16;
+		else
+			continue;	/* CNAME/其他类型不贡献地址 */
+
+		/* rdata 长度与类型不符 ⇒ 这条记录不可信，整条跳过而不是按
+		 * 短的读（那会把后面的字节当成地址的一部分）。 */
+		if (rr.rdlen != want || rr.class_ != KDG_RRCLASS_IN)
+			continue;
+
+		if (n >= cap)
+			return KDG_W_ECOUNT;
+		out[n].type = rr.type;
+		out[n].reserved_ = 0;
+		out[n].ttl = rr.ttl;
+		out[n].rdata_off = rr.rdata_off;
+		out[n].rdlen = rr.rdlen;
+		n++;
+	}
+	return (int)n;
+}
+
 u32 kdg_wire_cacheable_ttl(const struct kdg_summary *s, bool allow_negative)
 {
 	u32 ttl;

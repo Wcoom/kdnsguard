@@ -19,13 +19,14 @@ WIRE    := $(BUILD)/test_wire
 HTTP    := $(BUILD)/test_http
 CACHE   := $(BUILD)/test_cache
 CACHE_TAB := $(BUILD)/test_cache_tab
+MAP     := $(BUILD)/test_map
 WIRE_SRC  := test_wire.c  ../kernel/kdg_wire.c
 HTTP_SRC  := test_http.c  ../kernel/kdg_http.c
 CACHE_SRC := test_cache.c ../kernel/kdg_cache.c ../kernel/kdg_wire.c
 
 .PHONY: all run clean
 
-all: $(WIRE) $(HTTP) $(CACHE) $(CACHE_TAB)
+all: $(WIRE) $(HTTP) $(CACHE) $(CACHE_TAB) $(MAP)
 
 $(WIRE): $(WIRE_SRC) ../kernel/kdg_wire.h ../include/kdg_base.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(WIRE_SRC)
@@ -39,6 +40,9 @@ $(CACHE): $(CACHE_SRC) ../kernel/kdg_cache.h ../kernel/kdg_wire.h | $(BUILD)
 $(CACHE_TAB): test_cache_tab.c host_kernel.h ../kernel/kdg_cache_tab.c ../kernel/kdg_cache_tab.h ../kernel/kdg_cache.c ../kernel/kdg_wire.c | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -I. -DKDG_HOST_TEST -o $@ test_cache_tab.c ../kernel/kdg_cache.c ../kernel/kdg_wire.c
 
+$(MAP): test_map.c host_kernel.h ../kernel/kdg_map.c ../kernel/kdg_map.h ../kernel/kdg_wire.c ../kernel/kdg_wire.h | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -I. -DKDG_HOST_TEST -o $@ test_map.c ../kernel/kdg_wire.c
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
@@ -47,6 +51,7 @@ run: all
 	@./$(HTTP)
 	@./$(CACHE)
 	@./$(CACHE_TAB)
+	@./$(MAP)
 
 clean:
 	rm -rf $(BUILD)

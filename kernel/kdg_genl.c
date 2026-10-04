@@ -243,6 +243,23 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 	}
 
 	{
+		struct kdg_map_stats ms;
+
+		kdg_map_get_stats(&ms);
+		if (nla_put_u32(msg, KDG_HA_MAP_ENTRIES, ms.entries) ||
+		    nla_put_u64_64bit(msg, KDG_HA_MAP_HITS, ms.lookup_hits,
+				      KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_MAP_MISSES, ms.lookup_misses,
+				      KDG_HA_UNSPEC) ||
+		    nla_put_u32(msg, KDG_HA_MAP_EVICTIONS, ms.evictions) ||
+		    nla_put_u32(msg, KDG_HA_MAP_REJECTED, ms.record_rejected) ||
+		    nla_put_u32(msg, KDG_HA_MAP_MEM_BYTES, ms.mem_bytes)) {
+			nla_nest_cancel(msg, nest);
+			goto nla_failure;
+		}
+	}
+
+	{
 		struct kdg_doh_stats ds;
 		struct kdg_cache_stats cs;
 		struct kdg_resolve_stats rs;

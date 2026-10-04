@@ -16,6 +16,7 @@
  * 用法（设备上，需 root）:
  *   kdgctl             —— 探测族 + 打 CAPS
  *   kdgctl health      —— 探测族 + 打 GET_HEALTH
+ *   kdgctl maplookup <ip> —— 反查该 IP 关联的域名（方案 §12.2）
  */
 typedef unsigned char  u8;
 typedef unsigned short u16;
@@ -112,6 +113,26 @@ static usize slen(const char *s)
 	while (s[n])
 		n++;
 	return n;
+}
+
+/* freestanding：没有 libc，这两个是最小替身。 */
+static void *memcpy_(void *d, const void *s, usize n)
+{
+	u8 *dd = (u8 *)d;
+	const u8 *ss = (const u8 *)s;
+	usize i;
+
+	for (i = 0; i < n; i++)
+		dd[i] = ss[i];
+	return d;
+}
+
+static const char *str_chr(const char *s, char c)
+{
+	for (; *s; s++)
+		if (*s == c)
+			return s;
+	return (const char *)0;
 }
 
 static void puts_(const char *s)
@@ -384,6 +405,12 @@ static const char *ha_name(u16 type)
 	case KDG_HA_NAT_SPORT53:		return "nat_sport53";
 	case KDG_HA_CLIENT_IFACES:		return "client_ifaces";
 	case KDG_HA_LISTENER_READY:		return "listener_ready";
+	case KDG_HA_MAP_ENTRIES:		return "map_entries";
+	case KDG_HA_MAP_HITS:			return "map_hits";
+	case KDG_HA_MAP_MISSES:			return "map_misses";
+	case KDG_HA_MAP_EVICTIONS:		return "map_evictions";
+	case KDG_HA_MAP_REJECTED:		return "map_rejected";
+	case KDG_HA_MAP_MEM_BYTES:		return "map_mem_bytes";
 	default:				return (const char *)0;
 	}
 }
@@ -881,6 +908,246 @@ static int cmd_disable(u16 fam)
 
 /* ── 查询（字符设备）─────────────────────────────────────────────────── */
 
+/* ── MAP_LOOKUP：IP → 候选域名集合（方案 §12.2）──────────────────────── */
+
+static int hexval(char c)
+{
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return -1;
+}
+
+/*
+ * 极简地址解析：IPv4 "a.b.c.d" 与 IPv6（支持 `::` 压缩与尾部内嵌 IPv4）。
+ * 刻意不追求 RFC 4291 的全部写法（不做 zone id、不接受混合大小写外的花活）
+ * —— 这是诊断工具，能打出来的地址必须能查回去即可。
+ */
+static int parse_addr(const char *s, u8 *out, u32 *alen)
+{
+	u16 groups[8];
+	int dcolon = -1, i;
+	const char *p = s;
+
+	if (!s || !s[0])
+		return -1;
+
+	if (!str_chr(s, ':')) {			/* IPv4 */
+		u32 parts[4] = { 0, 0, 0, 0 };
+		u32 val = 0;
+		int n = 0, digits = 0;
+
+		for (p = s; ; p++) {
+			if (*p >= '0' && *p <= '9') {
+				val = val * 10 + (u32)(*p - '0');
+				if (val > 255 || ++digits > 3)
+					return -1;
+			} else if (*p == '.' || *p == 0) {
+				if (!digits || n >= 4)
+					return -1;
+				parts[n++] = val;
+				val = 0;
+				digits = 0;
+				if (!*p)
+					break;
+			} else {
+				return -1;
+			}
+		}
+		if (n != 4)
+			return -1;
+		for (i = 0; i < 4; i++)
+			out[i] = (u8)parts[i];
+		*alen = 4;
+		return 0;
+	}
+
+	/* IPv6 */
+	for (i = 0; i < 8; i++)
+		groups[i] = 0xffff;
+	i = 0;
+	while (*p) {
+		if (*p == ':') {
+			if (p[1] == ':') {
+				if (dcolon >= 0) return -1;
+				dcolon = i;
+				p += 2;
+				if (!*p) break;
+				continue;
+			}
+			return -1;
+		}
+		{
+			u32 val = 0;
+			int digits = 0, hv;
+
+			while ((hv = hexval(*p)) >= 0) {
+				val = (val << 4) | (u32)hv;
+				digits++;
+				p++;
+				if (digits > 4) return -1;
+			}
+			if (!digits) return -1;
+			if (i >= 8) return -1;
+			groups[i++] = (u16)val;
+		}
+		if (*p == ':') {
+			p++;
+			if (!*p) return -1;	/* 结尾单冒号非法 */
+			continue;
+		}
+		if (*p) return -1;
+	}
+	if (dcolon < 0 && i != 8) return -1;
+	*alen = 16;
+	{
+		int head = dcolon < 0 ? i : dcolon;
+		int tail = dcolon < 0 ? 0 : i - dcolon;
+		int z;
+
+		/* dcolon 之后的部分要右对齐到 groups[7] */
+		for (z = 0; z < tail; z++)
+			groups[8 - tail + z] = groups[head + z];
+		for (z = head; z < 8 - tail; z++)
+			groups[z] = 0;
+		for (z = 0; z < 8; z++) {
+			out[z * 2] = (u8)(groups[z] >> 8);
+			out[z * 2 + 1] = (u8)groups[z];
+		}
+	}
+	return 0;
+}
+
+/* 未压缩的 wire 域名 → 文本。返回写入的字符数（不含结尾 NUL）。 */
+static usize dname_to_text(const u8 *w, usize len, char *buf, usize cap)
+{
+	usize p = 0, o = 0;
+
+	while (p < len && w[p]) {
+		usize l = w[p++];
+
+		if (l > 63 || p + l > len) break;
+		if (o) {
+			if (o + 1 >= cap) break;
+			buf[o++] = '.';
+		}
+		if (o + l >= cap) break;
+		memcpy_(buf + o, w + p, l);
+		o += l;
+		p += l;
+	}
+	if (o >= cap) o = cap - 1;
+	buf[o] = 0;
+	return o;
+}
+
+static int cmd_maplookup(const char *ip_text)
+{
+	static u8 reqbuf[256 + 512];
+	static u8 respbuf[8 + 1024];
+	struct kdg_req_v1 *req = (struct kdg_req_v1 *)reqbuf;
+	u8 addr[16];
+	u32 alen = 0;
+	long fd, wn, rn;
+	char text[256];
+
+	if (parse_addr(ip_text, addr, &alen)) {
+		puts_("地址非法（IPv4 或 IPv6）\n");
+		return 1;
+	}
+
+	memset(req, 0, sizeof(*req));
+	req->abi_version = KDG_ABI_VERSION;
+	req->opcode = KDG_OP_MAP_LOOKUP;
+	req->total_len = (u32)(sizeof(*req) + alen);
+	req->request_cookie = 0x2233445566778899ULL;
+	req->query_len = alen;
+	memcpy_(reqbuf + sizeof(*req), addr, alen);
+
+	fd = sys4(SYS_openat, AT_FDCWD_, (long)"/dev/kdnsguard", O_RDWR_, 0);
+	if (fd < 0) {
+		puts_("打开 /dev/kdnsguard 失败（errno ");
+		putnum((u64)(-fd));
+		puts_("）\n");
+		return 1;
+	}
+	wn = sys3(SYS_write, fd, (long)reqbuf, (long)req->total_len);
+	if (wn < 0) {
+		puts_("write 失败 errno=");
+		putnum((u64)(-wn));
+		puts_("\n");
+		sys3(SYS_close, fd, 0, 0);
+		return 1;
+	}
+	rn = sys3(SYS_read, fd, (long)respbuf, sizeof(respbuf));
+	sys3(SYS_close, fd, 0, 0);
+	if (rn < (long)sizeof(struct kdg_resp_v1)) {
+		puts_("read 不足（");
+		putnum((u64)rn);
+		puts_(" 字节）\n");
+		return 1;
+	}
+
+	{
+		struct kdg_resp_v1 *r = (struct kdg_resp_v1 *)respbuf;
+		usize off = sizeof(*r);
+		struct kdg_map_result_v1 mh;
+		u32 i;
+
+		if (r->status != KDG_ST_OK) {
+			puts_("MAP_LOOKUP 失败 status=");
+			putnum(r->status);
+			puts_(" errno=");
+			putnum(r->errno_hint);
+			puts_("\n");
+			return 1;
+		}
+		if (r->response_len < sizeof(mh) ||
+		    off + sizeof(mh) > (usize)rn) {
+			puts_("响应体过短\n");
+			return 1;
+		}
+		memcpy_(&mh, respbuf + off, sizeof(mh));
+		off += sizeof(mh);
+
+		puts_("映射: count=");
+		putnum(mh.count);
+		puts_(" truncated=");
+		putnum(mh.truncated);
+		puts_(" profile_gen=");
+		putnum(mh.profile_generation);
+		puts_("\n");
+		if (!mh.count)
+			puts_("（该 IP 没有已知关联）\n");
+
+		for (i = 0; i < mh.count && i < KDG_MAP_MAX_ITEMS; i++) {
+			struct kdg_map_item_v1 it;
+
+			if (off + sizeof(it) > (usize)rn) break;
+			memcpy_(&it, respbuf + off, sizeof(it));
+			off += sizeof(it);
+			if (off + it.len > (usize)rn) break;
+
+			puts_("  [");
+			putnum(i);
+			puts_("] ttl_ms=");
+			putnum(it.ttl_ms);
+			puts_(" ");
+			if (it.kind == 0) {
+				dname_to_text(respbuf + off, it.len, text, sizeof(text));
+				puts_(text);
+			} else {
+				puts_("<裸地址 kind=");
+				putnum(it.kind);
+				puts_(">");
+			}
+			puts_("\n");
+			off += (usize)((it.len + 3u) & ~3u);
+		}
+	}
+	return 0;
+}
+
 static int cmd_query(const char *name)
 {
 	static u8 reqbuf[256 + 512];
@@ -1057,6 +1324,13 @@ void kdg_entry(long *sp)
 	}
 	if (argc >= 2 && str_eq(argv[1], "disable")) {
 		sys3(SYS_exit, cmd_disable(fam), 0, 0);
+	}
+	if (argc >= 2 && str_eq(argv[1], "maplookup")) {
+		if (argc < 3) {
+			puts_("用法: kdgctl maplookup <ipv4|ipv6>\n");
+			sys3(SYS_exit, 1, 0, 0);
+		}
+		sys3(SYS_exit, cmd_maplookup(argv[2]), 0, 0);
 	}
 
 	puts_("族 ");

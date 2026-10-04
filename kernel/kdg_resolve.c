@@ -241,7 +241,26 @@ validate:
 	if (*src == KDG_SRC_UPSTREAM)
 		g_stat.from_upstream++;
 
-	/* ── 7. 回填缓存（只有 owner 写；搭车者的 owner 已经写过）── */
+	/* ── 7. 记账：IP ↔ 域名 关联（方案 §12.2）──
+	 * 只在这条路径记：它是「一次真正的上游解析且已通过匹配校验」，缓存命中
+	 * 与搭车两条路径的关联早在成为缓存/合并项的那一次就记过了，它们的 TTL
+	 * 与缓存项同源、同寿命，所以不必重复记。
+	 *
+	 * 记的是**调用方问的那个名字**（q.qname 的规范形式），不是 RR 的 owner 名
+	 * —— 理由见 kdg_wire_collect_addrs 的注释。用规范形式（小写、未压缩）也
+	 * 让同一个域名的大小写变体落到同一条关联上。 */
+	if (*src == KDG_SRC_UPSTREAM) {
+		struct kdg_addr_ref arefs[KDG_WIRE_MAX_ADDRS];
+		int na = kdg_wire_collect_addrs(up, up_len, arefs,
+						KDG_WIRE_MAX_ADDRS);
+
+		if (na > 0)
+			kdg_map_record(req->net_id, req->profile_gen,
+				       q.qname.wire, q.qname.len,
+				       up, up_len, arefs, (u16)na);
+	}
+
+	/* ── 8. 回填缓存（只有 owner 写；搭车者的 owner 已经写过）── */
 	if (*src == KDG_SRC_UPSTREAM) {
 		ttl_s = kdg_wire_cacheable_ttl(&summary, true);
 		cacheable = (ttl_s > 0);

@@ -99,6 +99,62 @@ if [ -n "$UNEXPECTED" ]; then
 	exit 1
 fi
 
+# ── 分配/释放配对审计 ──────────────────────────────────────────────────
+# 为什么必须机械检查这一条：`kvmalloc` 家族在**大尺寸时返回 vmalloc 地址**，
+# 用 `kfree` 释放它 → `Unable to handle kernel paging request` + panic。
+# 而宿主侧的 host_kernel.h 把 kfree/kvfree 都映射成 free，**宿主单测对这一类
+# 错误完全免疫** —— 2026-10-05 就是这么把手机搞重启的（kdg_map_exit 用 kfree
+# 释放 kvcalloc 来的 316 KiB slots，rmmod 时 panic，minidump 里
+# `pc: kfree+0x54  lr: kdg_map_exit`）。
+#
+# 判据刻意保守：只认 `X->Y = kv*alloc(...)` / `X = v*alloc(...)` 这种本仓库
+# 实际使用的写法，并要求同文件出现**逐字符相同**的 `kvfree(X->Y)`。
+# 写法变了就得同步改这里 —— 这是有意为之：宁可漏报也不要误报，误报会让人
+# 把这道闸关掉，那才是真的失去保护。
+echo "--- 分配/释放配对审计（kv* → kvfree，v* → vfree）---"
+# 判据两条，缺一不可 —— 第一条才是真正救命的那条：
+#  1) 该指针**不得**出现在错误的释放函数里（kvmalloc 来的东西用 kfree → panic）；
+#  2) 该指针必须出现在正确的释放函数里（防泄漏）。
+# 只写第二条是不够的：同一个指针常常在**多条错误路径**上释放，改错其中一处，
+# 文件里仍然存在另一处正确的 kvfree —— 门禁会放行。（第一版就是这样，我把
+# kvfree(m->slots) 改回 kfree 之后它照样报「无」，靠反向注入测试才发现。）
+PAIR_BAD=""
+for f in "$PROJ_ROOT"/kernel/kdg_*.c; do
+	# 先去掉所有空白再匹配，避免 `kvfree( m->buckets )` 这种写法误报。
+	FLAT=$(tr -d ' \t' < "$f")
+	SITES=$(grep -nE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*((->|\.)[A-Za-z_][A-Za-z0-9_]*)?[[:space:]]*=[[:space:]]*(kv(calloc|malloc|malloc_array|zalloc)|v(malloc|zalloc))' "$f" \
+		| sed -E 's/^([0-9]+):[[:space:]]*([^[:space:]=]+)[[:space:]]*=[[:space:]]*([A-Za-z_][A-Za-z0-9_]*).*/\1 \2 \3/' || true)
+	[ -n "$SITES" ] || continue
+	while read -r ln lhs fn; do
+		[ -n "$lhs" ] || continue
+		case "$fn" in
+		kv*)	want=kvfree ; bad="kfree" ;;
+		v*)	want=vfree  ; bad="kfree kvfree" ;;
+		*)	continue ;;
+		esac
+		# 第一条：不得用错误的释放函数
+		for b in $bad; do
+			case "$FLAT" in
+			*"${b}(${lhs})"*) PAIR_BAD="$PAIR_BAD
+  $(basename "$f"):$ln  ${lhs} = ${fn}(...)  却用 ${b}(${lhs}) 释放（会 panic 重启）" ;;
+			esac
+		done
+		# 第二条：必须有正确的释放（防泄漏）
+		case "$FLAT" in
+		*"${want}(${lhs})"*) ;;
+		*)	PAIR_BAD="$PAIR_BAD
+  $(basename "$f"):$ln  ${lhs} = ${fn}(...)  找不到 ${want}(${lhs})（会泄漏）" ;;
+		esac
+	done <<< "$SITES"
+done
+if [ -n "$PAIR_BAD" ]; then
+	echo "构建失败：分配/释放配对错误。"
+	echo "kvmalloc 家族在尺寸较大时返回 vmalloc 地址，用 kfree 释放会 panic 重启。"
+	echo "$PAIR_BAD"
+	exit 1
+fi
+echo "无（每个 kv*/v* 分配都用正确的函数释放）"
+
 # ── 剥掉调试信息 ────────────────────────────────────────────────────────
 # mbedTLS 的调试节让 .ko 从 ~1.4 MB 膨胀到 ~5.8 MB。这不只是浪费：
 # 实测 5.85 MB 的模块在真机上 insmod 直接报 "Out of memory"（模块加载走

@@ -14,6 +14,7 @@
 
 #include "uapi/kdnsguard.h"
 #include "kdg_listener.h"
+#include "kdg_map.h"
 
 #define KDG_MOD_NAME		"kdnsguard"
 #define KDG_MOD_DESC		"Global kernel-space DNS takeover (DoH upstream)"

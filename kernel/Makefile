@@ -26,6 +26,7 @@ kdnsguard-y += kdg_chardev.o
 kdnsguard-y += kdg_wire.o
 kdnsguard-y += kdg_cache.o
 kdnsguard-y += kdg_cache_tab.o
+kdnsguard-y += kdg_map.o
 kdnsguard-y += kdg_sflight.o
 kdnsguard-y += kdg_quota.o
 kdnsguard-y += kdg_resolve.o
