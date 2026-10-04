@@ -13,6 +13,7 @@
 #include <linux/atomic.h>
 
 #include "uapi/kdnsguard.h"
+#include "kdg_listener.h"
 
 #define KDG_MOD_NAME		"kdnsguard"
 #define KDG_MOD_DESC		"Global kernel-space DNS takeover (DoH upstream)"
@@ -61,6 +62,12 @@ struct kdg_netns {
  * 见方案 §14.1；本阶段先由模块参数提供，仅用于开发验证。 */
 struct kdg_config_snapshot {
 	u32 generation;
+	u64 transaction_id;
+	u32 ownership;
+	u32 net_id;
+	u32 ifindex;
+	u64 network_epoch;
+	u8 private_dns_mode;
 	bool intercept_enabled;
 	u16 listen_port;
 	u32 default_deadline_ms;
@@ -80,6 +87,11 @@ struct kdg_netns *kdg_netns_of(struct net *net);
 int kdg_nat_register(struct net *net);
 void kdg_nat_unregister(struct net *net);
 u32 kdg_nat_capability_bits(void);
+
+/* kdg_listener.c */
+int kdg_listener_prepare(void);
+void kdg_listener_stop(void);
+bool kdg_listener_ready(void);
 
 /* kdg_genl.c */
 int kdg_genl_init(void);

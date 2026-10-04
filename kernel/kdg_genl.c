@@ -38,11 +38,45 @@ extern bool kdg_allow_intercept;
  * kdg_genl_family 构造回包，形成相互引用，前置声明是标准解法。 */
 static int kdg_genl_caps(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info);
+static int kdg_genl_set_intercept(bool enable);
 static int kdg_genl_enable(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_disable(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_set_trust(struct sk_buff *skb, struct genl_info *info);
+static int kdg_genl_prepare(struct sk_buff *skb, struct genl_info *info);
+static int kdg_genl_commit(struct sk_buff *skb, struct genl_info *info);
+static int kdg_genl_set_network(struct sk_buff *skb, struct genl_info *info);
+static int kdg_genl_private_dns(struct sk_buff *skb, struct genl_info *info);
+
 
 static const struct genl_ops kdg_genl_ops[] = {
+	{
+		.cmd		= KDG_CMD_PREPARE_PROFILE,
+		.doit		= kdg_genl_prepare,
+		.flags		= GENL_ADMIN_PERM,
+		.validate	= GENL_DONT_VALIDATE_STRICT |
+				  GENL_DONT_VALIDATE_DUMP,
+	},
+	{
+		.cmd		= KDG_CMD_COMMIT_PROFILE,
+		.doit		= kdg_genl_commit,
+		.flags		= GENL_ADMIN_PERM,
+		.validate	= GENL_DONT_VALIDATE_STRICT |
+				  GENL_DONT_VALIDATE_DUMP,
+	},
+	{
+		.cmd		= KDG_CMD_SET_NETWORK,
+		.doit		= kdg_genl_set_network,
+		.flags		= GENL_ADMIN_PERM,
+		.validate	= GENL_DONT_VALIDATE_STRICT |
+				  GENL_DONT_VALIDATE_DUMP,
+	},
+	{
+		.cmd		= KDG_CMD_SET_PRIVATE_DNS_STATE,
+		.doit		= kdg_genl_private_dns,
+		.flags		= GENL_ADMIN_PERM,
+		.validate	= GENL_DONT_VALIDATE_STRICT |
+				  GENL_DONT_VALIDATE_DUMP,
+	},
 	{
 		.cmd		= KDG_CMD_CAPS,
 		.doit		= kdg_genl_caps,
@@ -85,9 +119,14 @@ static const struct genl_ops kdg_genl_ops[] = {
  * 分配过大（方案 §7.4 的内存纪律同样适用于控制面）。 */
 static const struct nla_policy kdg_genl_policy[KDG_A_MAX + 1] = {
 	[KDG_A_ABI_VERSION]	= { .type = NLA_U16 },
-	[KDG_A_TRUST_MATERIAL]	= { .type = NLA_BINARY, .len = 16384 },
-	[KDG_A_GENERATION]	= { .type = NLA_U32 },
+	[KDG_A_TRANSACTION_ID]	= { .type = NLA_U64 },
+	[KDG_A_EXPECTED_GENERATION] = { .type = NLA_U32 },
+	[KDG_A_NETID]		= { .type = NLA_U32 },
+	[KDG_A_IFINDEX]		= { .type = NLA_U32 },
+	[KDG_A_EPOCH]		= { .type = NLA_U64 },
+	[KDG_A_PRIVATE_DNS_MODE] = { .type = NLA_U8 },
 	[KDG_A_READINESS]	= { .type = NLA_U32 },
+	[KDG_A_TRUST_MATERIAL]	= { .type = NLA_BINARY, .len = 16384 },
 	[KDG_A_ERRNO]		= { .type = NLA_S32 },
 };
 
@@ -156,7 +195,11 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 		goto nla_failure;
 
 	if (nla_put_u16(msg, KDG_A_ABI_VERSION, KDG_ABI_VERSION) ||
-	    nla_put_u32(msg, KDG_A_GENERATION, READ_ONCE(kdg_cfg.generation)))
+	    nla_put_u32(msg, KDG_A_GENERATION, READ_ONCE(kdg_cfg.generation)) ||
+	    nla_put_u32(msg, KDG_A_TRANSACTION_STATE,
+			 READ_ONCE(kdg_cfg.ownership)) ||
+	    nla_put_u8(msg, KDG_A_UPSTREAM_OK,
+			 kdg_tls_ca_count() != 0))
 		goto nla_failure;
 
 	nest = nla_nest_start(msg, KDG_A_HEALTH);
@@ -262,33 +305,38 @@ nla_failure:
 	return -EMSGSIZE;
 }
 
-/*
- * 启停接管。两者都要求 CAP_NET_ADMIN，且启用还要求模块以
- * allow_intercept=1 加载 —— 原因见文件头。
- */
 static int kdg_genl_set_intercept(bool enable)
 {
-	if (enable && !READ_ONCE(kdg_allow_intercept)) {
-		pr_warn_ratelimited("ENABLE_INTERCEPT 被拒绝：模块未以 allow_intercept=1 加载\n");
-		return -EPERM;
+	if (!enable) {
+		WRITE_ONCE(kdg_cfg.intercept_enabled, false);
+		WRITE_ONCE(kdg_cfg.ownership, KDG_OWN_NONE);
+		WRITE_ONCE(kdg_cfg.generation, READ_ONCE(kdg_cfg.generation) + 1);
+		kdg_listener_stop();
+		return 0;
 	}
-
-	/* generation 单调递增：方案 §5.1 要求「切换期间宁可返回短时明确失败，
-	 * 也不能出现两个 DNS 处理器串联」。旧 generation 的在途请求由调用方
-	 * 自行作废，内核侧不做隐式迁移。 */
-	WRITE_ONCE(kdg_cfg.intercept_enabled, enable);
+	if (!kdg_listener_ready() ||
+	    READ_ONCE(kdg_cfg.ownership) != KDG_OWN_PREPARED)
+		return -EAGAIN;
+	if (!READ_ONCE(kdg_allow_intercept))
+		return -EPERM;
+	WRITE_ONCE(kdg_cfg.intercept_enabled, true);
+	WRITE_ONCE(kdg_cfg.ownership, KDG_OWN_ACTIVE);
 	WRITE_ONCE(kdg_cfg.generation, READ_ONCE(kdg_cfg.generation) + 1);
-
-	pr_info("接管状态 -> %s (generation=%u)\n",
-		enable ? "启用" : "停用", READ_ONCE(kdg_cfg.generation));
 	return 0;
 }
+
 
 /*
  * 加载上游信任锚（方案 §6.2「受保护的初始化接口」）。
  * 要求 CAP_NET_ADMIN：能换信任锚就能把上游换成任何人，这正是
  * 方案 §14.1 说的「普通 App 不得换上游」。
  */
+static int kdg_genl_enable(struct sk_buff *skb, struct genl_info *info)
+{
+	return kdg_genl_set_intercept(true);
+}
+
+
 static int kdg_genl_set_trust(struct sk_buff *skb, struct genl_info *info)
 {
 	struct sk_buff *msg;
@@ -349,16 +397,79 @@ static int kdg_genl_set_trust(struct sk_buff *skb, struct genl_info *info)
 	return genlmsg_reply(msg, info);
 }
 
-static int kdg_genl_enable(struct sk_buff *skb, struct genl_info *info)
+static int kdg_genl_prepare(struct sk_buff *skb, struct genl_info *info)
 {
-	return kdg_genl_set_intercept(true);
+	u64 tx = info->attrs[KDG_A_TRANSACTION_ID] ?
+		nla_get_u64(info->attrs[KDG_A_TRANSACTION_ID]) : 0;
+	int ret;
+
+	if (!tx)
+		return -EINVAL;
+	if (READ_ONCE(kdg_cfg.ownership) == KDG_OWN_ACTIVE)
+		return -EBUSY;
+	if (!kdg_listener_ready()) {
+		ret = kdg_listener_prepare();
+		if (ret)
+			return ret;
+	}
+	if (!kdg_tls_ca_count())
+		return -EAGAIN;
+	WRITE_ONCE(kdg_cfg.transaction_id, tx);
+	WRITE_ONCE(kdg_cfg.ownership, KDG_OWN_PREPARED);
+	WRITE_ONCE(kdg_cfg.generation, READ_ONCE(kdg_cfg.generation) + 1);
+	return 0;
 }
+
+static int kdg_genl_commit(struct sk_buff *skb, struct genl_info *info)
+{
+	u64 tx;
+	u32 expected;
+
+	if (!info->attrs[KDG_A_TRANSACTION_ID] ||
+	    !info->attrs[KDG_A_EXPECTED_GENERATION] ||
+	    !info->attrs[KDG_A_READINESS])
+		return -EINVAL;
+	tx = nla_get_u64(info->attrs[KDG_A_TRANSACTION_ID]);
+	expected = nla_get_u32(info->attrs[KDG_A_EXPECTED_GENERATION]);
+	if (!nla_get_u32(info->attrs[KDG_A_READINESS]) ||
+	    tx != READ_ONCE(kdg_cfg.transaction_id) ||
+	    expected != READ_ONCE(kdg_cfg.generation) ||
+	    READ_ONCE(kdg_cfg.ownership) != KDG_OWN_PREPARED ||
+	    !kdg_listener_ready())
+		return -ESTALE;
+	if (!READ_ONCE(kdg_allow_intercept))
+		return -EPERM;
+	WRITE_ONCE(kdg_cfg.intercept_enabled, true);
+	WRITE_ONCE(kdg_cfg.ownership, KDG_OWN_ACTIVE);
+	WRITE_ONCE(kdg_cfg.generation, expected + 1);
+	return 0;
+}
+
+static int kdg_genl_set_network(struct sk_buff *skb, struct genl_info *info)
+{
+	if (info->attrs[KDG_A_NETID])
+		WRITE_ONCE(kdg_cfg.net_id, nla_get_u32(info->attrs[KDG_A_NETID]));
+	if (info->attrs[KDG_A_IFINDEX])
+		WRITE_ONCE(kdg_cfg.ifindex, nla_get_u32(info->attrs[KDG_A_IFINDEX]));
+	if (info->attrs[KDG_A_EPOCH])
+		WRITE_ONCE(kdg_cfg.network_epoch, nla_get_u64(info->attrs[KDG_A_EPOCH]));
+	return 0;
+}
+
+static int kdg_genl_private_dns(struct sk_buff *skb, struct genl_info *info)
+{
+	if (!info->attrs[KDG_A_PRIVATE_DNS_MODE])
+		return -EINVAL;
+	WRITE_ONCE(kdg_cfg.private_dns_mode,
+		   nla_get_u8(info->attrs[KDG_A_PRIVATE_DNS_MODE]));
+	return 0;
+}
+
 
 static int kdg_genl_disable(struct sk_buff *skb, struct genl_info *info)
 {
 	return kdg_genl_set_intercept(false);
 }
-
 int kdg_genl_init(void)
 {
 	return genl_register_family(&kdg_genl_family);

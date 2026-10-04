@@ -25,6 +25,12 @@
  * 在 P4 落地，届时这里会扩成 RCU 发布的不可变快照。 */
 struct kdg_config_snapshot kdg_cfg = {
 	.generation		= 1,
+	.transaction_id		= 0,
+	.ownership		= KDG_OWN_NONE,
+	.net_id			= 0,
+	.ifindex		= 0,
+	.network_epoch		= 0,
+	.private_dns_mode	= KDG_PDNS_UNKNOWN,
 	.intercept_enabled	= false,
 	.listen_port		= KDG_DEFAULT_LISTEN_PORT,
 	.default_deadline_ms	= KDG_DEFAULT_DEADLINE_MS,
@@ -106,6 +112,10 @@ static struct pernet_operations kdg_net_ops = {
 static int __init kdg_init(void)
 {
 	int ret;
+
+	ret = kdg_listener_init_state();
+	if (ret)
+		return ret;
 
 	/* 参数落到配置快照。越界值直接拒绝而不是静默截断。
 	 * 上限 65535 是端口上限；下限 1024 避开特权端口 —— 本项目不该
@@ -209,6 +219,13 @@ static int __init kdg_init(void)
 
 static void __exit kdg_exit(void)
 {
+	/* 先撤销 ownership、停止 listener，再撤销管理面和其他资源。 */
+	if (READ_ONCE(kdg_cfg.intercept_enabled)) {
+		WRITE_ONCE(kdg_cfg.intercept_enabled, false);
+		WRITE_ONCE(kdg_cfg.ownership, KDG_OWN_NONE);
+		WRITE_ONCE(kdg_cfg.generation, READ_ONCE(kdg_cfg.generation) + 1);
+	}
+	kdg_listener_stop();
 	/* 逆序拆除，且**先撤管理面**：否则会出现「用户空间刚把接管打开、
 	 * NAT hook 却正在被拆掉」的窗口。撤掉 genl 后不再有新的配置变更，
 	 * 再拆 NAT 就是纯粹的收敛过程。 */

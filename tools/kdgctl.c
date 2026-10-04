@@ -599,6 +599,204 @@ static int cmd_trust(u16 fam, const char *path)
 	return 0;
 }
 
+/* ── 所有权事务（Generic Netlink）────────────────────────────────────── */
+
+/* 发一条带属性的 genl 请求，返回内核错误码（0 表示成功）。 */
+struct kdg_attr_ref {
+	u16 type;
+	const void *data;
+	usize len;
+};
+
+static int genl_send_attrs(u16 fam, u8 cmd, const struct kdg_attr_ref *attrs,
+			   unsigned int nattrs)
+{
+	struct nlmsghdr *nh = (struct nlmsghdr *)txbuf;
+	struct genlmsghdr *gh;
+	struct sockaddr_nl dst;
+	unsigned int i;
+	int fd;
+	long n;
+
+	nh->nlmsg_len = sizeof(*nh) + sizeof(*gh);
+	nh->nlmsg_type = fam;
+	nh->nlmsg_flags = NLM_F_REQUEST_;
+	nh->nlmsg_seq = 3;
+	nh->nlmsg_pid = 0;
+	gh = (struct genlmsghdr *)(txbuf + sizeof(*nh));
+	gh->cmd = cmd;
+	gh->version = KDG_GENL_VERSION;
+	gh->reserved = 0;
+
+	g_attr_overflow = 0;
+	for (i = 0; i < nattrs; i++)
+		attr_put(attrs[i].type, attrs[i].data, attrs[i].len);
+	if (g_attr_overflow) {
+		puts_("内部错误：属性超出发送缓冲上限\n");
+		return -1;
+	}
+
+	fd = (int)sys3(SYS_socket, AF_NETLINK_, SOCK_RAW_, NETLINK_GENERIC_);
+	if (fd < 0)
+		return -1;
+	dst.nl_family = AF_NETLINK_;
+	dst.nl_pad = 0;
+	dst.nl_pid = 0;
+	dst.nl_groups = 0;
+	if (sys3(SYS_bind, fd, (long)&dst, sizeof(dst)) < 0)
+		return -1;
+	if (sys6(SYS_sendto, fd, (long)txbuf, nh->nlmsg_len, 0, 0, 0) < 0)
+		return -1;
+	n = sys6(SYS_recvfrom, fd, (long)rxbuf, sizeof(rxbuf), 0, 0, 0);
+	sys3(SYS_close, fd, 0, 0);
+	if (n < 0)
+		return -1;
+
+	{
+		struct nlmsghdr *rn = (struct nlmsghdr *)rxbuf;
+		int err = rn->nlmsg_type == 2 /* NLMSG_ERROR */ &&
+			  rn->nlmsg_len >= sizeof(*rn) + 4
+			  ? *(int *)(rxbuf + sizeof(*rn)) : 0;
+		return err;
+	}
+}
+
+/* 从 GET_HEALTH 回包里取 generation（顶层 KDG_A_GENERATION，u32）。 */
+static u32 genl_read_generation(u16 fam)
+{
+	struct nlmsghdr *nh = (struct nlmsghdr *)txbuf;
+	struct genlmsghdr *gh;
+	struct sockaddr_nl dst;
+	u8 *p;
+	u32 rem, generation = 0;
+	int fd;
+	long n;
+
+	nh->nlmsg_len = sizeof(*nh) + sizeof(*gh);
+	nh->nlmsg_type = fam;
+	nh->nlmsg_flags = NLM_F_REQUEST_;
+	nh->nlmsg_seq = 4;
+	nh->nlmsg_pid = 0;
+	gh = (struct genlmsghdr *)(txbuf + sizeof(*nh));
+	gh->cmd = KDG_CMD_GET_HEALTH;
+	gh->version = KDG_GENL_VERSION;
+	gh->reserved = 0;
+
+	fd = (int)sys3(SYS_socket, AF_NETLINK_, SOCK_RAW_, NETLINK_GENERIC_);
+	if (fd < 0)
+		return 0;
+	dst.nl_family = AF_NETLINK_;
+	dst.nl_pad = 0;
+	dst.nl_pid = 0;
+	dst.nl_groups = 0;
+	if (sys3(SYS_bind, fd, (long)&dst, sizeof(dst)) < 0)
+		return 0;
+	if (sys6(SYS_sendto, fd, (long)txbuf, nh->nlmsg_len, 0, 0, 0) < 0)
+		return 0;
+	n = sys6(SYS_recvfrom, fd, (long)rxbuf, sizeof(rxbuf), 0, 0, 0);
+	sys3(SYS_close, fd, 0, 0);
+	if (n <= 0)
+		return 0;
+
+	nh = (struct nlmsghdr *)rxbuf;
+	gh = (struct genlmsghdr *)(rxbuf + sizeof(*nh));
+	p = (u8 *)gh + sizeof(*gh);
+	rem = nh->nlmsg_len - (u32)(sizeof(*nh) + sizeof(*gh));
+	while (rem >= NLA_HDRLEN) {
+		struct nlattr *a = (struct nlattr *)p;
+		u16 alen = a->nla_len;
+		u16 atype = a->nla_type & 0x3fff;
+
+		if (alen < NLA_HDRLEN || alen > rem)
+			break;
+		if (atype == KDG_A_GENERATION && alen >= NLA_HDRLEN + 4)
+			generation = *(u32 *)(p + NLA_HDRLEN);
+		p += NLA_ALIGN4(alen);
+		rem -= NLA_ALIGN4(alen);
+	}
+	return generation;
+}
+
+static int cmd_prepare(u16 fam, const char *tx_text)
+{
+	u64 tx = 0;
+	unsigned int i;
+	int err;
+
+	for (i = 0; tx_text[i]; i++)
+		tx = tx * 10 + (u64)(tx_text[i] - '0');
+	if (tx == 0) {
+		puts_("transaction id 不能为 0\n");
+		return 1;
+	}
+	{
+		const struct kdg_attr_ref attrs[] = {
+			{ KDG_A_TRANSACTION_ID, &tx, sizeof(tx) },
+		};
+
+		err = genl_send_attrs(fam, KDG_CMD_PREPARE_PROFILE, attrs, 1);
+	}
+	if (err) {
+		puts_("PREPARE 失败 errno=");
+		putnum((u64)(-err));
+		puts_("\n");
+		return 1;
+	}
+	puts_("PREPARE 成功，generation=");
+	putnum(genl_read_generation(fam));
+	puts_("\n");
+	return 0;
+}
+
+static int cmd_commit(u16 fam, const char *tx_text)
+{
+	u64 tx = 0;
+	u32 expected, ready = 1;
+	unsigned int i;
+	int err;
+
+	for (i = 0; tx_text[i]; i++)
+		tx = tx * 10 + (u64)(tx_text[i] - '0');
+	expected = genl_read_generation(fam);
+	if (tx == 0 || expected == 0) {
+		puts_("需要有效的 transaction id 与 generation\n");
+		return 1;
+	}
+	{
+		const struct kdg_attr_ref attrs[] = {
+			{ KDG_A_TRANSACTION_ID, &tx, sizeof(tx) },
+			{ KDG_A_EXPECTED_GENERATION, &expected, sizeof(expected) },
+			{ KDG_A_READINESS, &ready, sizeof(ready) },
+		};
+
+		err = genl_send_attrs(fam, KDG_CMD_COMMIT_PROFILE, attrs, 3);
+	}
+	if (err) {
+		puts_("COMMIT 失败 errno=");
+		putnum((u64)(-err));
+		puts_("\n");
+		return 1;
+	}
+	puts_("COMMIT 成功，generation=");
+	putnum(genl_read_generation(fam));
+	puts_("\n");
+	return 0;
+}
+
+static int cmd_disable(u16 fam)
+{
+	int err = genl_send_attrs(fam, KDG_CMD_DISABLE_INTERCEPT, (const void *)0, 0);
+
+	if (err) {
+		puts_("DISABLE 失败 errno=");
+		putnum((u64)(-err));
+		puts_("\n");
+		return 1;
+	}
+	puts_("DISABLE 成功（ownership 已归还）\n");
+	return 0;
+}
+
 /* ── 查询（字符设备）─────────────────────────────────────────────────── */
 
 static int cmd_query(const char *name)
@@ -760,6 +958,23 @@ void kdg_entry(long *sp)
 			sys3(SYS_exit, 1, 0, 0);
 		}
 		sys3(SYS_exit, cmd_query(argv[2]), 0, 0);
+	}
+	if (argc >= 2 && str_eq(argv[1], "prepare")) {
+		if (argc < 3) {
+			puts_("用法: kdgctl prepare <transaction-id>\n");
+			sys3(SYS_exit, 1, 0, 0);
+		}
+		sys3(SYS_exit, cmd_prepare(fam, argv[2]), 0, 0);
+	}
+	if (argc >= 2 && str_eq(argv[1], "commit")) {
+		if (argc < 3) {
+			puts_("用法: kdgctl commit <transaction-id>\n");
+			sys3(SYS_exit, 1, 0, 0);
+		}
+		sys3(SYS_exit, cmd_commit(fam, argv[2]), 0, 0);
+	}
+	if (argc >= 2 && str_eq(argv[1], "disable")) {
+		sys3(SYS_exit, cmd_disable(fam), 0, 0);
 	}
 
 	puts_("族 ");

@@ -85,6 +85,9 @@ enum kdg_genl_attr {
 	/* 追加于尾部。SET_TRUST 的响应：本次成功加载的证书张数 / 累计张数。 */
 	KDG_A_CA_ADDED,			/* u32 */
 	KDG_A_CA_TOTAL,			/* u32 */
+	/* P3 ownership transaction attributes, appended for ABI compatibility. */
+	KDG_A_TRANSACTION_STATE,	/* u32: enum kdg_ownership */
+	KDG_A_UPSTREAM_OK,		/* u8 */
 	__KDG_A_MAX,
 };
 #define KDG_A_MAX (__KDG_A_MAX - 1)
