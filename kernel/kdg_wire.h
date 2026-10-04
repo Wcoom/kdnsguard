@@ -218,4 +218,26 @@ int kdg_wire_collect_ttl_offs(const u8 *msg, size_t len,
  * 覆盖 §8 的全部规则：TTL=0、SERVFAIL、截断、超大、非 NOERROR/NXDOMAIN。 */
 u32 kdg_wire_cacheable_ttl(const struct kdg_summary *s, bool allow_negative);
 
+/*
+ * 就地构造一个最小合规的**失败应答**（方案 §18 的严格模式要求）。
+ *
+ * 为什么必须做这件事：上游失效时**静默丢包**不是「严格」，只是把失败
+ * 转嫁给调用方——客户端会一直等到自己的超时（实测 3 s+），而且拿不到任何
+ * 可区分的信号。RFC 1035 的语义是「有响应、响应里说失败」。因此这里按
+ * 请求原样回填 ID 与问题区，置 QR=1、给定 rcode、其余计数为 0。
+ *
+ * 三条刻意的取舍：
+ *  1. **不回填 OPT**：EDNS0 里 OPT 的 TTL 字段承载 ext-rcode/版本/flags，
+ *     要正确回填就得连 badvers 语义一起实现；而失败应答回填 OPT 并无收益
+ *     （RFC 6891 允许应答方不实现 EDNS，客户端会退化）。少一个出错面。
+ *  2. **保留 opcode/RD/CD，清掉 AA/TC/RA/AD/Z**：AD 尤其不能带——那是
+ *     「已做 DNSSEC 验证」的声明，失败应答上带它是伪造安全状态（§8/§10.1）。
+ *  3. **question 解析失败时不回填问题区**（QDCOUNT=0）而不是整体拒绝：
+ *     畸形请求也应当收到 FORMERR，而不是被无声丢弃。
+ *
+ * 返回 KDG_W_OK 并写入 *out_len，或 KDG_W_EARG / KDG_W_ETRUNC / KDG_W_EBOUNDS。
+ */
+int kdg_wire_make_error_response(const u8 *query, size_t qlen, u8 rcode,
+				 u8 *out, size_t out_cap, size_t *out_len);
+
 #endif /* _KDG_WIRE_H */

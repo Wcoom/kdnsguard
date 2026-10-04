@@ -343,6 +343,55 @@ static u16 resolve_family(u16 *version)
 #define NLA_F_NESTED_		0x8000
 #define NLA_TYPE_MASK_		0x3fff
 
+/*
+ * GET_HEALTH 的嵌套属性名。没有这张表，回包只能打成「attr 25 len=8
+ * 1234567」——数值对，但核对时得反复回查 uapi 头，容易看错行。
+ * 名字只用于**本诊断工具**；内核侧不含任何字符串表。
+ */
+static const char *ha_name(u16 type)
+{
+	switch (type) {
+	case KDG_HA_OWNERSHIP:			return "ownership";
+	case KDG_HA_UPSTREAM_OK:		return "upstream_ok";
+	case KDG_HA_CONSECUTIVE_FAILURES:	return "consec_fail";
+	case KDG_HA_BACKOFF_UNTIL_MS:		return "backoff_ms";
+	case KDG_HA_LAST_ERRNO:			return "last_errno";
+	case KDG_HA_NAT_SEEN:			return "nat_seen";
+	case KDG_HA_NAT_REDIRECTED:		return "nat_redirected";
+	case KDG_HA_NAT_BYPASSED:		return "nat_bypassed";
+	case KDG_HA_NAT_HOOK_CALLS:		return "nat_hook_calls";
+	case KDG_HA_CA_COUNT:			return "ca_count";
+	case KDG_HA_DOH_QUERIES:		return "doh_queries";
+	case KDG_HA_DOH_OK:			return "doh_ok";
+	case KDG_HA_DOH_LAST_STATUS:		return "doh_last_status";
+	case KDG_HA_DOH_LAST_RTT_MS:		return "doh_last_rtt_ms";
+	case KDG_HA_CACHE_HITS:			return "cache_hits";
+	case KDG_HA_CACHE_MISSES:		return "cache_misses";
+	case KDG_HA_CACHE_ENTRIES:		return "cache_entries";
+	case KDG_HA_CACHE_MEM_BYTES:		return "cache_mem_bytes";
+	case KDG_HA_RESOLVE_CACHE:		return "resolve_cache";
+	case KDG_HA_RESOLVE_UPSTREAM:		return "resolve_upstream";
+	case KDG_HA_RESOLVE_JOINED:		return "resolve_joined";
+	case KDG_HA_SF_INFLIGHT:		return "sf_inflight";
+	case KDG_HA_SF_WAITERS:			return "sf_waiters";
+	case KDG_HA_QUOTA_ALLOWED:		return "quota_allowed";
+	case KDG_HA_QUOTA_DENIED:		return "quota_denied";
+	case KDG_HA_H2_SESSIONS:		return "h2_sessions";
+	case KDG_HA_H2_REQUESTS:		return "h2_requests";
+	case KDG_HA_H2_OK:			return "h2_ok";
+	case KDG_HA_NAT_FWD_SEEN:		return "nat_fwd_seen";
+	case KDG_HA_NAT_FWD_BYPASSED:		return "nat_fwd_bypassed";
+	case KDG_HA_NAT_SPORT53:		return "nat_sport53";
+	case KDG_HA_CLIENT_IFACES:		return "client_ifaces";
+	case KDG_HA_LISTENER_READY:		return "listener_ready";
+	default:				return (const char *)0;
+	}
+}
+
+/* 置位后 dump_attrs_at 在嵌套层打印上面的名字。全局标志而不是参数：
+ * 该函数是纯诊断输出路径，为传一个调试开关改签名不划算。 */
+static int g_dump_health_names;
+
 /* 递归展开属性。深度上限 2 足够本 UAPI（顶层 + 一个嵌套块），
  * 设上限是刻意的：嵌套深度来自对端，不能让一个畸形回包把栈打穿。 */
 static void dump_attrs_at(u8 *base, u32 len, int depth)
@@ -373,6 +422,15 @@ static void dump_attrs_at(u8 *base, u32 len, int depth)
 			p += NLA_ALIGN4(alen);
 			rem -= NLA_ALIGN4(alen);
 			continue;
+		}
+
+		if (depth > 0 && g_dump_health_names) {
+			const char *nm = ha_name(atype);
+
+			if (nm) {
+				puts_(" ");
+				puts_(nm);
+			}
 		}
 
 		puts_(" len=");
@@ -1014,8 +1072,11 @@ void kdg_entry(long *sp)
 		dump_attrs("CAPS 回包:");
 
 	n = genl_xchg(fam, KDG_CMD_GET_HEALTH, KDG_GENL_VERSION);
-	if (n > 0)
+	if (n > 0) {
+		g_dump_health_names = 1;
 		dump_attrs("GET_HEALTH 回包:");
+		g_dump_health_names = 0;
+	}
 
 	sys3(SYS_exit, 0, 0, 0);
 }

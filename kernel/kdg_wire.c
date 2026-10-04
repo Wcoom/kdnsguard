@@ -797,3 +797,55 @@ int kdg_wire_dname_to_text(const struct kdg_dname *n, char *buf, size_t buflen)
 	buf[o] = '\0';
 	return (int)o;
 }
+
+/*
+ * 最小合规失败应答。设计的来龙去脉见 kdg_wire.h 的注释；这里只说实现上
+ * 两个容易写错的点：
+ *
+ *  - **ID 必须逐字节原样回填**，不过主机序转换：报文里的 ID 是与调用方
+ *    配对的唯一凭据，经过一次字节序转换就成了另一个值（这正是「用 u16 存
+ *    ID 再 htons 回填」类实现最常见的错）。
+ *  - **flags 只做位运算，不整体覆盖**：RD/CD 是调用方的语义，要留；
+ *    AD 是我们**没有资格**声明的东西（那是「已做 DNSSEC 验证」，本模块
+ *    不做本地验证，见 §8），失败应答上必须清零。
+ */
+int kdg_wire_make_error_response(const u8 *query, size_t qlen, u8 rcode,
+				 u8 *out, size_t out_cap, size_t *out_len)
+{
+	struct kdg_query q;
+	u16 flags;
+	size_t qsec_len = 0;
+	size_t total;
+
+	if (!query || !out || !out_len)
+		return KDG_W_EARG;
+	if (qlen < KDG_DNS_HDR_LEN)
+		return KDG_W_ETRUNC;	/* 连 header 都不全，无法构造 */
+
+	if (kdg_wire_parse_query(query, qlen, &q) == KDG_W_OK &&
+	    (size_t)KDG_DNS_HDR_LEN + q.question_len <= qlen)
+		qsec_len = q.question_len;
+
+	total = KDG_DNS_HDR_LEN + qsec_len;
+	if (total > out_cap)
+		return KDG_W_EBOUNDS;
+
+	flags = ((u16)query[2] << 8) | (u16)query[3];
+	flags &= (u16)(KDG_DNS_F_OPCODE_MASK | KDG_DNS_F_RD | KDG_DNS_F_CD);
+	flags |= (u16)KDG_DNS_F_QR;
+	flags &= (u16)~KDG_DNS_F_RCODE_MASK;
+	flags |= (u16)(rcode & KDG_DNS_F_RCODE_MASK);
+
+	memset(out, 0, total);
+	out[0] = query[0];
+	out[1] = query[1];
+	out[2] = (u8)(flags >> 8);
+	out[3] = (u8)flags;
+	/* QDCOUNT 与 AN/NS/AR 计数：AN/NS/AR 保持 0（memset 已置零）。 */
+	out[5] = (u8)(qsec_len ? 1 : 0);
+	if (qsec_len)
+		memcpy(out + KDG_DNS_HDR_LEN, query + KDG_DNS_HDR_LEN, qsec_len);
+
+	*out_len = total;
+	return KDG_W_OK;
+}

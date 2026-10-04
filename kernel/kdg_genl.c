@@ -226,7 +226,18 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 			      KDG_HA_UNSPEC) ||
 	    nla_put_u64_64bit(msg, KDG_HA_NAT_HOOK_CALLS,
 			      atomic64_read(&ns->nat.hook_calls),
-			      KDG_HA_UNSPEC)) {
+			      KDG_HA_UNSPEC) ||
+	    nla_put_u64_64bit(msg, KDG_HA_NAT_FWD_SEEN,
+			      atomic64_read(&ns->nat.fwd_seen),
+			      KDG_HA_UNSPEC) ||
+	    nla_put_u64_64bit(msg, KDG_HA_NAT_FWD_BYPASSED,
+			      atomic64_read(&ns->nat.fwd_bypassed),
+			      KDG_HA_UNSPEC) ||
+	    nla_put_u64_64bit(msg, KDG_HA_NAT_SPORT53,
+			      atomic64_read(&ns->nat.sport53),
+			      KDG_HA_UNSPEC) ||
+	    nla_put_u32(msg, KDG_HA_CLIENT_IFACES, kdg_listener_client_count()) ||
+	    nla_put_u8(msg, KDG_HA_LISTENER_READY, kdg_listener_ready())) {
 		nla_nest_cancel(msg, nest);
 		goto nla_failure;
 	}

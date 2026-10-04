@@ -1,0 +1,94 @@
+--- 时间 ---
+Mon Oct  5 05:17:03 CST 2026
+--- 监听 ---
+UNCONN      0      0      10.56.139.93:1054               0.0.0.0:*                  
+UNCONN      0      0      127.0.0.1:1054               0.0.0.0:*                  
+UNCONN      0      0        [240a:42e6:2002:6b53::fd]:1054                  [::]:*                  
+UNCONN      0      0        [::1]:1054                  [::]:*                  
+LISTEN      0      16     127.0.0.1:1054               0.0.0.0:*                  
+LISTEN      0      16     10.56.139.93:1054               0.0.0.0:*                  
+LISTEN      0      16       [240a:42e6:2002:6b53::fd]:1054                  [::]:*                  
+LISTEN      0      16       [::1]:1054                  [::]:*                  
+--- 健康块 ---
+GET_HEALTH 回包:
+attr 1 len=2  1
+attr 4 len=4  3 (0x00000003)
+attr 21 len=4  2 (0x00000002)
+attr 22 len=1  1
+attr 17 [nested]
+  attr 1 ownership len=4  2 (0x00000002)
+  attr 2 upstream_ok len=1  0
+  attr 3 consec_fail len=4  0 (0x00000000)
+  attr 4 backoff_ms len=4  0 (0x00000000)
+  attr 5 last_errno len=4  4294967189 (0xffffff95)
+  attr 6 nat_seen len=8  24
+  attr 7 nat_redirected len=8  24
+  attr 8 nat_bypassed len=8  0
+  attr 9 nat_hook_calls len=8  94
+  attr 36 nat_fwd_seen len=8  0
+  attr 37 nat_fwd_bypassed len=8  0
+  attr 38 nat_sport53 len=8  0
+  attr 39 client_ifaces len=4  1 (0x00000001)
+  attr 40 listener_ready len=1  1
+  attr 10 ca_count len=4  1 (0x00000001)
+  attr 11 doh_queries len=8  14
+  attr 12 doh_ok len=8  9
+  attr 13 doh_last_status len=4  200 (0x000000c8)
+  attr 14 doh_last_rtt_ms len=4  235 (0x000000eb)
+  attr 15 cache_hits len=8  12
+  attr 16 cache_misses len=8  12
+  attr 17 len=8  1
+  attr 18 len=8  0
+  attr 19 cache_entries len=4  7 (0x00000007)
+  attr 20 cache_mem_bytes len=4  1475200 (0x00168280)
+  attr 21 resolve_cache len=8  12
+  attr 22 resolve_upstream len=8  8
+  attr 23 resolve_joined len=8  0
+  attr 24 len=8  8
+  attr 25 sf_inflight len=4  0 (0x00000000)
+  attr 26 sf_waiters len=4  0 (0x00000000)
+  attr 27 len=8  0
+  attr 28 quota_allowed len=8  1
+  attr 29 quota_denied len=8  0
+  attr 30 len=4  1 (0x00000001)
+  attr 31 h2_sessions len=8  9
+  attr 32 h2_requests len=8  9
+  attr 33 h2_ok len=8  9
+  attr 34 len=8  0
+  attr 35 len=8  0
+--- conntrack 53 条目 ---
+ipv4     2 tcp      6 431341 LAST_ACK src=10.56.139.42 dst=111.51.158.194 sport=53884 dport=443 src=111.51.158.194 dst=10.86.13.30 sport=443 dport=53884 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 431992 ESTABLISHED src=10.86.13.30 dst=101.43.5.105 sport=53604 dport=443 src=101.43.5.105 dst=10.86.13.30 sport=443 dport=53604 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 67 TIME_WAIT src=10.56.139.42 dst=127.175.129.252 sport=53392 dport=36549 src=127.175.129.252 dst=10.56.139.42 sport=36549 dport=53392 [ASSURED] mark=196707 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 udp      17 5 src=10.86.13.30 dst=223.5.5.5 sport=37816 dport=53 src=127.0.0.1 dst=10.86.13.30 sport=1054 dport=37816 mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 430860 LAST_ACK src=10.56.139.42 dst=111.51.158.194 sport=53490 dport=443 src=111.51.158.194 dst=10.86.13.30 sport=443 dport=53490 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 96 TIME_WAIT src=10.86.13.30 dst=1.1.1.1 sport=51824 dport=53 src=127.0.0.1 dst=10.86.13.30 sport=1054 dport=51824 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 431341 LAST_ACK src=10.56.139.42 dst=111.51.158.194 sport=53888 dport=443 src=111.51.158.194 dst=10.86.13.30 sport=443 dport=53888 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 430800 LAST_ACK src=10.56.139.42 dst=117.157.20.54 sport=53936 dport=443 src=117.157.20.54 dst=10.86.13.30 sport=443 dport=53936 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 68 TIME_WAIT src=10.56.139.42 dst=127.205.172.126 sport=53412 dport=36549 src=127.205.172.126 dst=10.56.139.42 sport=36549 dport=53412 [ASSURED] mark=196707 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 431993 ESTABLISHED src=10.86.13.30 dst=155.254.102.211 sport=45674 dport=5368 src=155.254.102.211 dst=10.86.13.30 sport=5368 dport=45674 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 66 TIME_WAIT src=10.86.13.30 dst=8.8.8.8 sport=38150 dport=53 src=127.0.0.1 dst=10.86.13.30 sport=1054 dport=38150 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 431881 LAST_ACK src=10.56.139.42 dst=111.12.215.79 sport=53324 dport=443 src=111.12.215.79 dst=10.86.13.30 sport=443 dport=53324 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 udp      17 8 src=10.86.13.30 dst=223.5.5.5 sport=60085 dport=53 src=127.0.0.1 dst=10.86.13.30 sport=1054 dport=60085 mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 68 TIME_WAIT src=10.56.139.42 dst=127.237.56.217 sport=53404 dport=36549 src=127.237.56.217 dst=10.56.139.42 sport=36549 dport=53404 [ASSURED] mark=196707 secctx=u:object_r:unlabeled:s0 use=2
+--- 内核日志 ---
+[50038.664193] kdnsguard: mbedTLS 平台层就绪（mem/printf/time/entropy 均已注入）
+[50038.664220] kdnsguard: TLS 子系统就绪（CTR_DRBG 已播种，信任锚 0 张）
+[50038.664539] kdnsguard: cache: 就绪：4096 槽位（结构 1440 KiB）/ 1024 桶 / 内存上限 8192 KiB
+[50038.664552] kdnsguard: /dev/kdnsguard 已注册（major 440，root:root 0600）
+[50038.664568] kdnsguard: NAT hook 已注册（IPv4+IPv6，LOCAL_OUT + PREROUTING）
+[50038.664570] kdnsguard: 已加载：ABI v1，监听端口 1054，接管 未启用（capability=0x00000003）
+[50038.670845] kdnsguard: 信任锚加载：本次 1 张，累计 1 张
+[50038.798065] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[50038.866433] kdnsguard: listener: UDP/TCP loopback listener ready on port 1054
+[50038.867814] kdnsguard: listener: rndis0: 客户端入口 listener 就绪（IPv4+IPv6）
+[50039.990439] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[50047.321797] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[50047.554246] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[50047.737853] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[50047.940101] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[50048.138973] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[50048.386587] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[50072.723915] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+--- 告警 ---
+0

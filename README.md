@@ -9,7 +9,7 @@
 
 ---
 
-## 当前状态：P0 完成，P1/P2 达成，P3 前置取证完成
+## 当前状态：P0–P3 完成（P3 已真机接管验证），P4 未开始
 
 | 阶段 | 状态 |
 |---|---|
@@ -17,27 +17,47 @@
 | **内核骨架** 生命周期 / NAT 注册 / DNS 校验器 / UAPI | ✅ 完成并真机验证 |
 | **P1** 内核 TLS + H1 DoH 原型 | ✅ **达成方案 §19 的第一个可验收成果** |
 | **P2** 解析核心：缓存 / 同名合并 / 每调用方配额 / **H2 上游（nghttp2）** | ✅ 完成并真机验证 |
-| P3 全局接管 | ⬜ **未开始：前置取证完成，等待代理所有权交接设计** |
+| **P3** 全局接管（双栈 NAT / 代理所有权交接 / 泄漏与失败策略） | ✅ **已在受控窗口内真机接管并验证**，见 [`docs/P3-takeover.md`](docs/P3-takeover.md) |
 | P4–P7 | ⬜ 未开始 |
 
-### P3 前置取证：代理所有权分层（2026-10-04）
+**接管默认关闭**：`ownership=0`、listener 不启动、NAT hook 只计数不改写。
+启用路径是 `PREPARE → COMMIT` 的 ownership 事务（且模块须以 `allow_intercept=1`
+加载）。2026-10-05 的真机接管验证是在**受控窗口**内做的，跑完即改回原配置，
+设备当前不处于接管态。
 
-在当前实际运行的 mihomo 1.10.0（BoxProxy，IPv4 `rmnet_data2`）上，以 root 和 uid=2000
-分别发送只针对 `[redacted]` 的探针查询，结果如下：
+### P3 真机验证摘要（2026-10-05，详见 `docs/P3-takeover.md`）
 
-| 路径 | `getpeername()` / 结果 | 结论 |
-|---|---|---|
-| IPv4 连接 UDP `[redacted]` | `[redacted]`，查询成功 | mihomo eBPF 在 Netfilter LOCAL_OUT 前改写；不是原始目标 |
-| IPv4 TCP `[redacted]` | `[redacted]`，查询成功 | TCP 同样由 socket 层接管，不能只按 UDP 推断 |
-| IPv4 非连接 UDP `sendto()` | `getsockname=[redacted]`，查询成功 | 当前探针未证明该路径被 socket 层改写；须单独协作/回归 |
-| IPv6 UDP `2001:4860:4860::8888:53` | 真实 IPv6 对端，查询成功 | 当前代理路径未接管该 IPv6 目标，存在与 IPv4 不同的所有权 |
+所有权交接不靠改 eBPF 源码：mihomo 已有 `listeners[].dns-mode: off`，置 off 后
+53 在 socket 层直接放行到 Netfilter。实测 `getpeername()` 从 `127.x:33507` 变为
+真实的 `223.5.5.5:53`。
 
-kdnsguard 在 `allow_intercept=0` 下加载后观察到 IPv4 53 hook 计数增长、全部
-`NAT_BYPASSED`，IPv6 也可注册 hook；这证明 Netfilter 入口可用，但不证明它能恢复
-已被 eBPF 改写的原始 IPv4 目标。当前不启用全局接管。P3 必须先提供代理侧的
-PREPARE/COMMIT 所有权交接：至少包括 IPv4 TCP/连接 UDP 的 eBPF DNS 放行或由代理
-显式转发到 kdnsguard、非连接 UDP 的明确语义、IPv6 对应策略，以及 kdnsguard 上游
-socket 的旁路身份，避免回环。
+| 验收项（方案 §16 P3 行） | 实测 |
+|---|---|
+| UDP / TCP 双栈接管 | LOCAL_OUT IPv4/IPv6 的 UDP/TCP/sendto 全部由内核应答 |
+| conntrack 回包 | 反向映射实证：IPv4 → `127.0.0.1:1054`，IPv6 → `[::1]:1054` |
+| **热点 / 共享网络** | 笔记本（10.56.139.42）查手机 rndis0:53 → 反向映射为 `10.56.139.93:1054`，2 ms 命中缓存 |
+| 客户端入口生命周期 | dummy 接口实测：建/改/删地址与删接口都正确绑定/重绑/释放 |
+| 严格模式零回落 | 注入上游故障后查询**失败而非回落**；1.0 s 返回 SERVFAIL |
+| 退出 | `DISABLE` 后 listener 全消失、DNS 立即回到原链路；`rmmod` 干净、0 告警 |
+
+**本轮修掉两个真实缺陷**（真机上暴露的）：
+
+1. **IPv4 地址添加不产生 netdev 事件**——`inet_insert_ifa()` 发的是
+   `inetaddr_chain` 而非 `netdev_chain`。只挂 netdev 链会导致「接口先 up、地址后配」
+   （即用户后开热点的真实时序）永远不被接管，且日志上看不出异常。已补挂
+   `register_inetaddr_notifier()` / `register_inet6addr_notifier()`。
+2. **上游失败时静默丢包**——客户端只能等到自己的超时（实测 3.05 s），违反方案 §18
+   「返回 SERVFAIL/API 错误」。已新增 `kdg_wire_make_error_response()`。
+
+**提交前独立审核又发现 5 条真机测不出来的问题**（IPv6 绑定地址与
+`nf_nat_redirect_ipv6` 的选择规则不一致、持锁做上游探测会拖住 rtnl、
+`stop()` 与并发 PREPARE 的时序、`stop()` 与通知链回调无互斥、未区分
+子网命名空间），已全部修掉并重新真机回归。明细与「哪条修法被审核本身否决」
+见 `docs/P3-takeover.md` §5。
+
+**明确未覆盖**：真实 Wi-Fi↔蜂窝切换未做（当前手机是本机唯一出口，切换会切断验证
+通路）；netId/fwmark 多网络隔离未实现；上游仍是 IPv4 bootstrap。理由与细节见
+`docs/P3-takeover.md` §6。
 
 
 真机实测（OnePlus 13，内核 `6.6.118-…-abogki20260727-4k`）：
@@ -109,17 +129,20 @@ kdnsguard/
     kdg.h                 模块内部共享定义
     kdg_main.c            生命周期、per-netns 状态、模块参数
     kdg_nat.c             Netfilter/NAT 接管点（方案 §5.2）
+    kdg_listener.c        loopback + 客户端入口 listener、ownership 事务的执行体
     kdg_genl.c            管理面 Generic Netlink 族
     kdg_wire.{h,c}        有界 DNS wire 校验器（方案 §8）
-    kdg_transport.h       上游 DoH 传输层接口（实现留待 P1/P2）
+    kdg_sock/tls/http/h2/doh/resolve/cache*/sflight/quota/chardev…
+                          上游 DoH 链路与解析编排（P1/P2）
   tests/                  宿主侧语料测试（ASan/UBSan）
   tools/
     build.sh              构建 kdnsguard.ko
     build-kdgctl.sh       构建 freestanding aarch64 诊断客户端
-    kdgctl.c
+    build-netprobe.sh     构建 DNS 路径探针（判「谁抢到了 53」）
+    kdgctl.c / netprobe.c
     manifest.sh           生成 kernel_build_manifest（方案 §15）
   third_party/            依赖锁定与授权审计
-  docs/                   P0 结论等
+  docs/                   P0 结论、P3 接管验证记录与取证
 ```
 
 ---
@@ -141,18 +164,41 @@ RFC 1035 §4.1.4 要求指针指向 "a prior occurrence"。据此强制 `target 
 于是所有指针链沿地址严格递减 ⇒ **环在构造上不可能存在**，不依赖「跳转次数
 上限」兜底（上限只是第二道闸）。这是合规的收紧，不是额外限制。
 
-### 骨架阶段默认不改写任何流量
+### 接管默认关闭，启用必须走 ownership 事务
 
-`intercept_enabled` 默认 0，且启用还需要模块以 `allow_intercept=1` 加载。
-原因是本阶段**还没有**本地 DNS 监听者，一旦启用接管，53 端口流量会被改写到
-`127.0.0.1:1054` 而无人应答——等于把手机的 DNS 打断。这是「分阶段推进、
-每步都有退出条件」的落地。
+`intercept_enabled` 默认 0，且启用还需要模块以 `allow_intercept=1` 加载，
+并且要经过 `PREPARE`（建 listener、探测上游、要求信任锚已加载）→ `COMMIT`
+（校验 transaction/generation/readiness）。`DISABLE` 停 listener 并把所有权
+还给原链路。这是「分阶段推进、每步都有退出条件」的落地，也让真机验证可以在
+一个可随时收回的窗口里做。
+
+### 两条路径的 listener **不能**共用同一个绑定地址
+
+`LOCAL_OUT` 的 REDIRECT 目标是 loopback，`PREROUTING` 的目标是**入接口自己的
+地址**——这是 `nf_nat_redirect_*` 按 hooknum 分支的语义，也是 conntrack 反向映射
+对回包源地址的要求。因此 listener 分两组：loopback 组服务本机查询，客户端入口组
+（热点 / USB 共享 / AP）逐个绑定到接口地址上。详见
+[`docs/P3-takeover.md`](docs/P3-takeover.md) §2。
+
+### 客户端入口只认「已建好 listener」的白名单
+
+PREROUTING 只对**已成功绑定 listener 的入接口**接管，名单由模块参数
+`client_ifaces` 给出。名单外的接口一律 `NF_ACCEPT`——方案 §5.2 要求「外部接口
+默认不允许主动访问这个 listener」，这也是「手机在运营商网络上的地址不会变成
+开放解析器」的实现方式。宁可少接管一个接口，也不能「先接管、后建 listener」
+把客户端的 DNS 打进黑洞（`nf_nat_redirect_*` 在接口无地址时直接 `NF_DROP`）。
 
 ### NAT 接管必须走 NAT hook provider 机制
 
 方案 §5.2 明确禁止「在任意普通 hook 里调一次 `nf_nat_setup_info()`」。
 正确做法是经 `nf_nat_ipv4_register_fn()` 把 ops 插进 **nat 核心自己的 hook**，
 由 nat 核心完成改写并借 conntrack 建立反向转换。见 `kernel/kdg_nat.c` 头注。
+
+### 上游失败必须**回一个应答**，不能静默丢包
+
+严格模式（方案 §18）的「返回 SERVFAIL/API 错误」是字面要求：不回包等于把失败
+转嫁给调用方，客户端只能等到自己的超时，而且拿不到任何可区分信号。见
+`kdg_wire_make_error_response()`。
 
 ---
 

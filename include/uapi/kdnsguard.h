@@ -136,6 +136,14 @@ enum kdg_health_attr {
 	KDG_HA_H2_OK,			/* u64 */
 	KDG_HA_H2_PROTO_ERRORS,		/* u64：nghttp2 层错误 */
 	KDG_HA_H2_STREAM_RESETS,	/* u64 */
+	/* P3：PREROUTING（热点 / USB 共享 / AP 客户端）路径的独立计数。
+	 * 与 LOCAL_OUT 分开计数是必要的：fwd_seen - seen 能立刻区分
+	 * 「客户端流量根本没到 hook」与「到了但被入口白名单挡掉」。 */
+	KDG_HA_NAT_FWD_SEEN,		/* u64：来源为转发路径且目的端口 53 */
+	KDG_HA_NAT_FWD_BYPASSED,	/* u64：其中因入接口不在白名单/无 listener 放行 */
+	KDG_HA_NAT_SPORT53,		/* u64：**新**连接的源端口 53（只计数，不接管）*/
+	KDG_HA_CLIENT_IFACES,		/* u32：已建 listener 的客户端入口数 */
+	KDG_HA_LISTENER_READY,		/* u8：loopback listener 是否就绪 */
 	__KDG_HA_MAX,
 };
 #define KDG_HA_MAX (__KDG_HA_MAX - 1)

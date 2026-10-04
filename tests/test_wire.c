@@ -699,6 +699,98 @@ static void test_invariants(void)
 	g_pass++;
 }
 
+/* ── 失败应答构造（方案 §18：严格模式必须明确失败，不能静默丢包）────── */
+static void test_error_response(void)
+{
+	u8 q[512], r[512];
+	size_t qn, rn;
+	struct kdg_summary s;
+
+	puts("[失败应答]");
+
+	qn = build_query(q, 0x1234, KDG_DNS_F_RD, "example.com", KDG_RRTYPE_A);
+
+	/* 基本形态：ID / question 原样，QR=1，rcode=SERVFAIL，其余计数为 0 */
+	rn = sizeof(r);
+	TEQ(kdg_wire_make_error_response(q, qn, KDG_RCODE_SERVFAIL, r, rn, &rn),
+	    KDG_W_OK, "构造成功");
+	TEQ(r[0], 0x12, "ID 高字节逐字节保留");
+	TEQ(r[1], 0x34, "ID 低字节逐字节保留");
+	T((r[2] & 0x80) != 0, "QR=1");
+	TEQ(r[3] & 0x0f, KDG_RCODE_SERVFAIL, "rcode=SERVFAIL");
+	TEQ(r[4], 0, "ANCOUNT 高字节=0");
+	TEQ(r[5], 1, "QDCOUNT=1");
+	TEQ(r[6], 0, "ANCOUNT=0");
+	TEQ(r[8], 0, "NSCOUNT=0");
+	TEQ(r[10], 0, "ARCOUNT=0");
+	/* flags 的两个字节各自承载哪些位要写清楚，否则很容易把 RD 写成 r[3]：
+	 *   高字节 r[2]：QR(0x80) opcode(0x78) AA(0x04) TC(0x02) RD(0x01)
+	 *   低字节 r[3]：RA(0x80) Z(0x40) AD(0x20) CD(0x10) RCODE(0x0f) */
+	T(r[2] & 0x01, "RD 位保留");
+	T(!(r[2] & 0x02), "TC 清零");
+	T(!(r[2] & 0x04), "AA 清零");
+	T(!(r[3] & 0x80), "RA 清零");
+	T(!(r[3] & 0x20), "AD 清零（绝不伪造安全状态）");
+	TEQ(rn, KDG_DNS_HDR_LEN + qn - KDG_DNS_HDR_LEN, "长度=header+question");
+	TEQ(memcmp(r + KDG_DNS_HDR_LEN, q + KDG_DNS_HDR_LEN,
+		   qn - KDG_DNS_HDR_LEN), 0, "问题区逐字节一致");
+
+	/* 产物必须是可被自家解析器接受的合法响应 */
+	TEQ(kdg_wire_parse_response(r, rn, &s), KDG_W_OK, "产物可解析");
+	TEQ(s.rcode, KDG_RCODE_SERVFAIL, "解析出的 rcode 正确");
+	TEQ(s.id, 0x1234, "解析出的 ID 正确");
+	T(s.qr, "解析出的 QR=1");
+	T(s.question_ok, "question 段完整");
+	TEQ(s.ancount, 0, "无答案");
+
+	/* 请求带 AD 时也必须清掉：AD 是「已验证」的声明，不是可继承的位 */
+	qn = build_query(q, 0xbeef, KDG_DNS_F_RD | KDG_DNS_F_AD, "a.example",
+			 KDG_RRTYPE_AAAA);
+	rn = sizeof(r);
+	TEQ(kdg_wire_make_error_response(q, qn, KDG_RCODE_SERVFAIL, r, rn, &rn),
+	    KDG_W_OK, "带 AD 的请求也能构造");
+	T(!(r[3] & 0x20), "请求带 AD 也要清掉");
+
+	/* CD 是调用方语义，要保留 */
+	qn = build_query(q, 0x0001, KDG_DNS_F_CD, "b.example", KDG_RRTYPE_A);
+	rn = sizeof(r);
+	TEQ(kdg_wire_make_error_response(q, qn, KDG_RCODE_FORMERR, r, rn, &rn),
+	    KDG_W_OK, "FORMERR 构造");
+	T(r[3] & 0x10, "CD 位保留");
+	TEQ(r[3] & 0x0f, KDG_RCODE_FORMERR, "rcode=FORMERR");
+
+	/* 畸形请求：header 合法但问题区坏掉 → 仍然回一个应答（QDCOUNT=0），
+	 * 而不是无声丢弃。 */
+	memset(q, 0, sizeof(q));
+	put_hdr(q, 0x2222, KDG_DNS_F_RD, 1, 0, 0, 0);
+	q[12] = 0xc0;	/* 指向自己的压缩指针：非法 */
+	q[13] = 0x0c;
+	q[14] = 0; q[15] = 1; q[16] = 0; q[17] = 1;
+	rn = sizeof(r);
+	TEQ(kdg_wire_make_error_response(q, 18, KDG_RCODE_FORMERR, r, rn, &rn),
+	    KDG_W_OK, "畸形问题区仍回应答");
+	TEQ(r[5], 0, "畸形时 QDCOUNT=0");
+	TEQ(rn, KDG_DNS_HDR_LEN, "畸形时长度=12");
+	TEQ(r[1], 0x22, "畸形时 ID 仍原样");
+
+	/* 边界 */
+	TEQ(kdg_wire_make_error_response(q, 11, KDG_RCODE_SERVFAIL, r, sizeof(r),
+					 &rn), KDG_W_ETRUNC, "报文短于 header");
+	{
+		size_t small = 8;
+
+		qn = build_query(q, 0x1234, KDG_DNS_F_RD, "example.com",
+				 KDG_RRTYPE_A);
+		TEQ(kdg_wire_make_error_response(q, qn, KDG_RCODE_SERVFAIL, r,
+						 small, &small),
+		    KDG_W_EBOUNDS, "输出缓冲不足");
+	}
+	TEQ(kdg_wire_make_error_response((const u8 *)0, 12, 0, r, sizeof(r), &rn),
+	    KDG_W_EARG, "空请求指针");
+	TEQ(kdg_wire_make_error_response(q, 12, 0, (u8 *)0, sizeof(r), &rn),
+	    KDG_W_EARG, "空输出指针");
+}
+
 int main(void)
 {
 	puts("=== kdg_wire 语料测试 ===");
@@ -715,6 +807,7 @@ int main(void)
 	test_cache_policy();
 	test_match();
 	test_dname_text();
+	test_error_response();
 	test_invariants();
 
 	printf("\n=== 通过 %d / 失败 %d ===\n", g_pass, g_fail);

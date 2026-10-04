@@ -55,6 +55,20 @@ static uint kdg_deadline_ms = KDG_DEFAULT_DEADLINE_MS;
 module_param_named(deadline_ms, kdg_deadline_ms, uint, 0444);
 MODULE_PARM_DESC(deadline_ms, "单次查询默认 deadline（毫秒，默认 3000）");
 
+/*
+ * 客户端入口接口名（逗号分隔）。这些接口上的 53 **转发**流量（热点 / USB
+ * 共享 / AP 的客户端）会被 PREROUTING 接管。方案 §5.2 要求「外部接口默认
+ * 不允许主动访问这个 listener，除明确的热点客户端入口」—— 这张名单就是
+ * 「明确」的落点：不在名单里的接口上的 53 一律 NF_ACCEPT，既不改写也不建
+ * listener，因此手机在运营商网络上的地址不会变成开放解析器。
+ *
+ * 置空串可整体关闭该能力（只保留本地 LOCAL_OUT 接管）。
+ */
+static char *kdg_client_ifaces_spec = "rndis0,rndis1,usb0,wlan0,wlan1,wlan2,bt-pan";
+module_param_named(client_ifaces, kdg_client_ifaces_spec, charp, 0444);
+MODULE_PARM_DESC(client_ifaces,
+	"客户端入口接口名，逗号分隔；这些接口的 53 转发流量交给内核。空串=关闭。");
+
 /* ── per-netns 状态 ───────────────────────────────────────────────────── */
 static unsigned int kdg_net_id;
 
@@ -114,6 +128,10 @@ static int __init kdg_init(void)
 	int ret;
 
 	ret = kdg_listener_init_state();
+	if (ret)
+		return ret;
+
+	ret = kdg_listener_client_config(kdg_client_ifaces_spec);
 	if (ret)
 		return ret;
 

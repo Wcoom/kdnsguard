@@ -15,10 +15,16 @@
  *     nf_nat_initialized 的记账，也拿不到 nat 核心的 null-binding / oif 变更
  *     处理，回包方向的行为与 iptables/nftables 的 NAT 不一致。
  *
- * 本阶段的开关策略：`intercept_enabled` 默认 **0**。为 0 时 hook 只做计数
- * 统计后立刻 NF_ACCEPT，对系统**零行为影响**——骨架阶段要证明的是「注册
- * 链路通、hook 确实被调用」，而不是真的把手机的 DNS 抢过来（那是 P3，且
- * 必须先与现有 eBPF 入站协调好所有权，见方案 §5.1）。
+ * 本阶段的开关策略（P3）：`intercept_enabled` 默认 **0**。为 0 时 hook 只做
+ * 计数统计后立刻 NF_ACCEPT，对系统**零行为影响**；置 1 的唯一路径是 genl 的
+ * ownership 事务（PREPARE → COMMIT），且模块必须以 `allow_intercept=1` 加载。
+ *
+ * 两条路径的所有权不同，必须分开处理：
+ *   - **LOCAL_OUT**（本机进程查询）—— 改写到 loopback，由 loopback listener 应答；
+ *   - **PREROUTING**（热点/共享网络客户端的转发查询）—— 改成**入接口自己的
+ *     地址**，因此只在「该接口上已建好 listener」时才接管（见 kdg_listener.c
+ *     的客户端入口表）。名单外的接口一律放行，避免手机在运营商网络上的地址
+ *     变成开放解析器（方案 §5.2）。
  */
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
 
@@ -72,14 +78,28 @@ static bool kdg_get_ports(const struct sk_buff *skb, unsigned int off,
 	return true;
 }
 
+/* kdg_classify_dns() 的返回值。刻意不用 bool：源端口 53 是需要**单独计数**
+ * 而不是「顺带接管」的情形，历史上正是把它并进 bool 判据埋下一个反射面。 */
+#define KDG_DNS_QUERY		1
+#define KDG_DNS_SPORT53		2
+
 /*
- * 判断本包是否是「明文 DNS」，返回目的端口。
+ * 判断本包是否是「明文 DNS 查询」。
  *
  * 只认 UDP/TCP。DoT(853)/DoQ(853) 与 DoH(443) 不在此列——方案 §11 明确：
  * 非 53 的加密 DNS 不能靠 payload 猜测来识别，只能靠精确目标限制或接口协作。
+ *
+ * ⚠️ 判据是**目的端口** 53，不是「源或目的端口」。
+ *
+ * 早期版本写的是 `dport == 53 || sport == 53`，看似能顺手覆盖回包方向，
+ * 实际是个缺陷：回包由 conntrack 的反向映射负责，根本不会走到这里
+ * （nf_nat_inet_fn 只对 IP_CT_NEW/RELATED 且未 NAT 初始化的连接遍历内层
+ * ops，见 net/netfilter/nf_nat_core.c）。而放宽到 sport 会让**新**的
+ * 源端口 53 报文（伪造源、DNS NOTIFY、反射放大）也进接管判定，在
+ * PREROUTING 上就是给外部送了一个反射面。源端口 53 只计数，不接管。
  */
-static bool kdg_is_plain_dns(const struct sk_buff *skb, u8 pf,
-			     struct kdg_ports *ports)
+static int kdg_classify_dns(const struct sk_buff *skb, u8 pf,
+			    struct kdg_ports *ports)
 {
 	unsigned int thoff;
 
@@ -89,11 +109,11 @@ static bool kdg_is_plain_dns(const struct sk_buff *skb, u8 pf,
 
 		if (iph->protocol != IPPROTO_UDP &&
 		    iph->protocol != IPPROTO_TCP)
-			return false;
+			return 0;
 		/* ihl 由对端控制，先验证下界再乘 4，避免 0 或 <5 造成
 		 * 偏移算错。netfilter 此前已 pskb_may_pull 过基础头部。 */
 		if (iph->ihl < 5)
-			return false;
+			return 0;
 		thoff = (unsigned int)iph->ihl * 4;
 		break;
 	}
@@ -102,18 +122,72 @@ static bool kdg_is_plain_dns(const struct sk_buff *skb, u8 pf,
 
 		if (iph6->nexthdr != IPPROTO_UDP &&
 		    iph6->nexthdr != IPPROTO_TCP)
-			return false;
+			return 0;
 		thoff = sizeof(struct ipv6hdr);
 		break;
 	}
 	default:
-		return false;
+		return 0;
 	}
 
 	if (!kdg_get_ports(skb, thoff, ports))
+		return 0;
+
+	if (ports->dport == htons(53))
+		return KDG_DNS_QUERY;
+	if (ports->sport == htons(53))
+		return KDG_DNS_SPORT53;
+	return 0;
+}
+
+/*
+ * PREROUTING 路径的准入。返回 true 表示「这个入接口的 53 由本项目接管」。
+ *
+ * 三重判据缺一不可：
+ *  1. 入接口在客户端入口表里（模块参数 client_ifaces 白名单 + listener 已建成）；
+ *  2. 该接口的**这个地址族**上确实有 listener（上面已解释 IPv6 的 scope 问题）；
+ *  3. IPv6 目的地址是全局 scope —— 链路本地目的地会让 nf_nat_redirect_ipv6
+ *     选到接口的链路本地地址，而那里没有 listener。
+ *
+ * 任何一条不满足都返回 false，调用方 **NF_ACCEPT**：宁可少接管，也不能
+ * 改写到没人听的地方（那等于静默丢客户端的 DNS）。
+ */
+bool kdg_v6_addr_is_global(const u8 *addr16)
+{
+	/* 拷进对齐的局部量再问：调用方传进来的可能是裸字节数组。头文件的
+	 * 注释解释了为什么判据是「scope 掩码为 0」而不是比较 SCOPE_GLOBAL。 */
+	struct in6_addr a;
+
+	memcpy(&a, addr16, sizeof(a));
+	return !(ipv6_addr_type(&a) & IPV6_ADDR_SCOPE_MASK);
+}
+
+static bool kdg_prerouting_allowed(const struct sk_buff *skb,
+				   const struct nf_hook_state *state)
+{
+	u32 caps;
+
+	if (!state->in)
+		return false;
+	caps = kdg_listener_client_caps(state->net, state->in);
+	if (!caps)
 		return false;
 
-	return ports->dport == htons(53) || ports->sport == htons(53);
+	if (state->pf == NFPROTO_IPV4)
+		return caps & KDG_CLI_CAP_V4;
+
+	if (state->pf == NFPROTO_IPV6) {
+		const struct ipv6hdr *iph6 = ipv6_hdr(skb);
+
+		if (!(caps & KDG_CLI_CAP_V6))
+			return false;
+		/* 链路本地等窄 scope 的目的地会被 nf_nat_redirect_ipv6 选到
+		 * 接口的链路本地地址，而那里没有 listener ⇒ 必须放行。 */
+		if (!kdg_v6_addr_is_global((const u8 *)&iph6->daddr))
+			return false;
+		return true;
+	}
+	return false;
 }
 
 /*
@@ -127,6 +201,7 @@ static unsigned int kdg_nat_hook(void *priv, struct sk_buff *skb,
 	struct kdg_netns *ns = kdg_netns_of(state->net);
 	struct kdg_ports ports;
 	struct nf_nat_range2 range;
+	int kind;
 
 	if (!ns)
 		return NF_ACCEPT;
@@ -182,12 +257,27 @@ static unsigned int kdg_nat_hook(void *priv, struct sk_buff *skb,
 			       min_t(unsigned int, skb_headlen(skb), 48), true);
 	}
 
-	if (!kdg_is_plain_dns(skb, state->pf, &ports))
+	kind = kdg_classify_dns(skb, state->pf, &ports);
+	if (kind == 0)
 		return NF_ACCEPT;
+	if (kind == KDG_DNS_SPORT53) {
+		/* 新连接的源端口 53：只记账，不接管。 */
+		atomic64_inc(&ns->nat.sport53);
+		return NF_ACCEPT;
+	}
 
 	atomic64_inc(&ns->nat.seen);
 
-	/* 未启用接管：只观察，绝不改写。骨架阶段这是默认路径。 */
+	/* 转发路径（热点/共享网络客户端）只接管白名单入接口。 */
+	if (state->hook == NF_INET_PRE_ROUTING) {
+		atomic64_inc(&ns->nat.fwd_seen);
+		if (!kdg_prerouting_allowed(skb, state)) {
+			atomic64_inc(&ns->nat.fwd_bypassed);
+			return NF_ACCEPT;
+		}
+	}
+
+	/* 未启用接管：只观察，绝不改写。 */
 	if (!READ_ONCE(kdg_cfg.intercept_enabled)) {
 		atomic64_inc(&ns->nat.bypassed);
 		return NF_ACCEPT;
