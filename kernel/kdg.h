@@ -182,6 +182,10 @@ void kdg_tls_global_exit(void);
 /* kdg_psa_probe.c —— PSA 直探针（排障用，定位后可整体删除） */
 void kdg_psa_probe(void);
 
+/* kdg_pool.c —— 上游 DoH 持久连接池（方案 §6.3） */
+int kdg_pool_init(void);
+void kdg_pool_shutdown(void);
+
 /* kdg_cache_tab.c —— DNS 缓存存储层 */
 int kdg_cache_tab_init(void);
 void kdg_cache_tab_exit(void);

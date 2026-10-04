@@ -18,7 +18,21 @@
 
 /* ── 模块级共享状态 ──────────────────────────────────────────────────── */
 
+/*
+ * ⚠️ **两把锁，不是一个。** 各自保护一件独立的共享状态：
+ *
+ *  - `kdg_tls_mutex`：信任锚链，以及「一次握手与一次信任锚加载不得并行」。
+ *    它在**整段握手期间**被持有（见 kdg_doh.c / kdg_upstream.c）。
+ *  - `kdg_rng_mutex`：CTR_DRBG。只在一次取随机数期间被持有。
+ *
+ * 为什么不合成一把：`mbedtls_ssl_handshake()` 内部会调 `f_rng`，也就是
+ * `kdg_tls_rng()`。如果它取的是调用方**已经持有**的那把锁，第一次握手就会
+ * 自死锁 —— 症状是「第一次查询永久挂住、日志里什么都没有」，从现象完全
+ * 看不出是锁的粒度问题。两把锁之间不存在反向获取（持 rng 锁时绝不进 SSL
+ * 层），因此不会成环。
+ */
 static DEFINE_MUTEX(kdg_tls_mutex);
+static DEFINE_MUTEX(kdg_rng_mutex);
 
 static mbedtls_entropy_context	kdg_entropy;
 static mbedtls_ctr_drbg_context	kdg_ctr_drbg;
@@ -37,6 +51,30 @@ void kdg_tls_unlock(void)
 	mutex_unlock(&kdg_tls_mutex);
 }
 
+/*
+ * 取随机数的包装。
+ *
+ * 为什么需要它（这是 P6 之后新增的一层）：旧的实现靠 `kdg_tls_lock()` 把
+ * **整条查询**串行化，副作用是 DRBG 天然不会被并发访问。而持久连接池让
+ * 连接长期存在、多个连接可能同时发记录，那把粗锁就不能再罩住整条查询了
+ * （罩住就等于放弃池化的并发性）。于是把锁的粒度收到这里 —— 只罩住
+ * DRBG 本身，正是 kdg_tls.h 里早就写下的话：「P2 引入请求队列后，锁的粒度
+ * 可以收细到 RNG 与共享 CA，但语义不变」。
+ *
+ * MBEDTLS_THREADING_C 在内核态里是关闭的（不适合让库自己加锁），所以这层
+ * 必须由我们提供。成本是一次未被争用的互斥锁加锁/解锁，与一次 SHA-256
+ * 相比可以忽略。
+ */
+static int kdg_tls_rng(void *ctx, unsigned char *out, size_t len)
+{
+	int ret;
+
+	mutex_lock(&kdg_rng_mutex);
+	ret = mbedtls_ctr_drbg_random(ctx, out, len);
+	mutex_unlock(&kdg_rng_mutex);
+	return ret;
+}
+
 /* ── BIO 回调：把 mbedTLS 的 I/O 接到内核 socket 上 ─────────────────── */
 
 /*
@@ -49,6 +87,10 @@ void kdg_tls_unlock(void)
  * ⚠️ 这里**不能**返 0 表示连接关闭：那会被 mbedTLS 理解为「还没数据、等会儿再试」，
  * 于是一个已经 FIN 的对端会让握手空转到超时，而不是立刻报错。
  * 读到 0 字节必须翻译成 MBEDTLS_ERR_NET_CONN_RESET。
+ *
+ * 另一处同样容易被忽略的约定：**超时不是错误，是 WANT_READ**。持久连接上
+ * 接收超时被用作「扫描滴答」（见 kdg_pool.c 的 KDG_POOL_TICK_MS），一个
+ * 250 ms 的滴答如果报成 RECV_FAILED，就会把一条完全健康的连接当成坏了拆掉。
  */
 static int kdg_tls_bio_send(void *ctx, const unsigned char *buf, size_t len)
 {
@@ -73,6 +115,8 @@ static int kdg_tls_bio_recv(void *ctx, unsigned char *buf, size_t len)
 	ret = kdg_sock_recv_some(t->sock, buf, len);
 	if (ret < 0) {
 		t->last_net_errno = ret;
+		if (ret == -ETIMEDOUT)
+			return MBEDTLS_ERR_SSL_WANT_READ;
 		return MBEDTLS_ERR_NET_RECV_FAILED;
 	}
 	if (ret == 0) {
@@ -142,6 +186,8 @@ static unsigned int kdg_tls_ca_count_locked(void)
 	return n;
 }
 
+static void kdg_tls_clear_ca_locked(void);
+
 int kdg_tls_add_ca(const u8 *data, size_t len)
 {
 	unsigned int before, after;
@@ -184,7 +230,7 @@ int kdg_tls_add_ca(const u8 *data, size_t len)
 		pr_err("信任锚解析有失败项（%d 张），拒绝本次加载\n",
 		       ret);
 		/* 已追加的部分无法单张摘除，只能整体作废，避免留下未知状态。 */
-		kdg_tls_clear_ca();
+		kdg_tls_clear_ca_locked();
 		kdg_tls_unlock();
 		return -EINVAL;
 	}
@@ -200,7 +246,12 @@ unsigned int kdg_tls_ca_count(void)
 	return READ_ONCE(kdg_ca_count);
 }
 
-void kdg_tls_clear_ca(void)
+/*
+ * 清空信任锚。**调用方必须已持有 kdg_tls_mutex** ——
+ * kdg_tls_add_ca() 的失败路径就是这么调它的，而在那里再取一次锁会自死锁。
+ * 名字里的 _locked 就是这条约定本身；对外的 kdg_tls_clear_ca() 是薄包装。
+ */
+static void kdg_tls_clear_ca_locked(void)
 {
 	if (!kdg_ca_created)
 		return;
@@ -208,6 +259,16 @@ void kdg_tls_clear_ca(void)
 	mbedtls_x509_crt_free(&kdg_ca);
 	mbedtls_x509_crt_init(&kdg_ca);
 	WRITE_ONCE(kdg_ca_count, 0);
+}
+
+void kdg_tls_clear_ca(void)
+{
+	if (!kdg_ca_created)
+		return;
+
+	kdg_tls_lock();
+	kdg_tls_clear_ca_locked();
+	kdg_tls_unlock();
 }
 
 /*
@@ -283,7 +344,7 @@ int kdg_tls_session_open(struct kdg_tls *t, struct kdg_sock *sock,
 		mbedtls_ssl_conf_dbg(&t->conf, kdg_tls_debug, NULL);
 	}
 
-	mbedtls_ssl_conf_rng(&t->conf, mbedtls_ctr_drbg_random, &kdg_ctr_drbg);
+	mbedtls_ssl_conf_rng(&t->conf, kdg_tls_rng, &kdg_ctr_drbg);
 	mbedtls_ssl_conf_ca_chain(&t->conf, &kdg_ca, NULL);
 	mbedtls_ssl_conf_alpn_protocols(&t->conf, kdg_alpn_protos);
 
@@ -326,6 +387,16 @@ int kdg_tls_handshake(struct kdg_tls *t)
 
 	ret = mbedtls_ssl_handshake(&t->ssl);
 	if (ret != 0) {
+		/* WANT_READ/WANT_WRITE 在这里只可能来自**接收超时**（我们自备的
+		 * socket 层是阻塞的，唯一会返回 WANT_READ 的地方就是
+		 * kdg_tls_bio_recv 的超时分支）。因此它是「握手没能在超时内
+		 * 完成」，而不是「握手协议出错」—— 两者的可诊断性差很多，
+		 * 分不开就会让人对着一个 -EIO 去查证书问题。 */
+		if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+		    ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+			pr_warn("TLS 握手超时（对端在 deadline 内未完成握手）\n");
+			return -ETIMEDOUT;
+		}
 		/* 握手失败时，证书类错误往往同时体现在 verify result 里。
 		 * 把它记下来，便于上层给出「是证书问题还是网络问题」的区分。 */
 		t->verify_flags = mbedtls_ssl_get_verify_result(&t->ssl);
@@ -385,6 +456,17 @@ int kdg_tls_read(struct kdg_tls *t, void *buf, size_t len)
 		return 0;			/* 对端正常关闭 */
 	if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
 		return 0;
+	/*
+	 * WANT_READ = 这次接收没在超时内拿到数据。**它是「暂时没有」，不是
+	 * 「连接坏了」** —— 持久连接上接收超时被用作扫描滴答，把它当错误会
+	 * 让一条健康的空闲连接每 250 ms 被拆一次。
+	 *
+	 * 注意 mbedTLS 会把跨调用读到的半个记录留在自己的缓冲里，因此这里
+	 * 返回 -EAGAIN 不会丢数据：下次读到的仍是一个完整记录。
+	 */
+	if (ret == MBEDTLS_ERR_SSL_WANT_READ ||
+	    ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+		return -EAGAIN;
 	if (ret < 0) {
 		pr_warn("TLS 读取失败: %s\n", kdg_tls_strerror(ret));
 		return -EIO;

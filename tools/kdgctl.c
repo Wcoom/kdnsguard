@@ -411,6 +411,19 @@ static const char *ha_name(u16 type)
 	case KDG_HA_MAP_EVICTIONS:		return "map_evictions";
 	case KDG_HA_MAP_REJECTED:		return "map_rejected";
 	case KDG_HA_MAP_MEM_BYTES:		return "map_mem_bytes";
+	case KDG_HA_POOL_CONNECTS:		return "pool_connects";
+	case KDG_HA_POOL_REUSED:		return "pool_reused";
+	case KDG_HA_POOL_INFLIGHT:		return "pool_inflight";
+	case KDG_HA_POOL_QUEUED:		return "pool_queued";
+	case KDG_HA_POOL_STREAM_LIMIT:		return "pool_stream_limit";
+	case KDG_HA_POOL_IDLE_CLOSES:		return "pool_idle_closes";
+	case KDG_HA_POOL_CONN_ERRORS:		return "pool_conn_errors";
+	case KDG_HA_POOL_UPSTREAM_TIMEOUTS:	return "pool_upstream_timeouts";
+	case KDG_HA_POOL_REJECTED:		return "pool_rejected";
+	case KDG_HA_POOL_H1_FALLBACKS:		return "pool_h1_fallbacks";
+	case KDG_HA_POOL_SLOTS_USED:		return "pool_slots_used";
+	case KDG_HA_POOL_SLOTS_MAX:		return "pool_slots_max";
+	case KDG_HA_POOL_CONNECTED:		return "pool_connected";
 	default:				return (const char *)0;
 	}
 }

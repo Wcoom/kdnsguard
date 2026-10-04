@@ -26,6 +26,7 @@
 #include "kdg_sflight.h"
 #include "kdg_quota.h"
 #include "kdg_h2.h"
+#include "kdg_pool.h"
 
 /* 骨架阶段的安全闸：即使有人拿到 CAP_NET_ADMIN 并调用 ENABLE_INTERCEPT，
  * 只要模块不是以 allow_intercept=1 加载的，就拒绝启用。理由是本阶段
@@ -270,6 +271,7 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 		struct kdg_sflight_stats fs;
 		struct kdg_quota_stats qs;
 		struct kdg_h2_stats hs;
+		struct kdg_pool_stats ps;
 
 		kdg_doh_get_stats(&ds);
 		kdg_cache_stats(&cs);
@@ -277,6 +279,7 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 		kdg_sflight_stats(&fs);
 		kdg_quota_stats(&qs);
 		kdg_h2_get_stats(&hs);
+		kdg_pool_get_stats(&ps);
 		if (nla_put_u32(msg, KDG_HA_CA_COUNT, kdg_tls_ca_count()) ||
 		    nla_put_u64_64bit(msg, KDG_HA_DOH_QUERIES, ds.queries,
 				      KDG_HA_UNSPEC) ||
@@ -322,7 +325,28 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 		    nla_put_u64_64bit(msg, KDG_HA_H2_PROTO_ERRORS,
 				      hs.proto_errors, KDG_HA_UNSPEC) ||
 		    nla_put_u64_64bit(msg, KDG_HA_H2_STREAM_RESETS,
-				      hs.stream_resets, KDG_HA_UNSPEC)) {
+				      hs.stream_resets, KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_POOL_CONNECTS,
+				      ps.connects, KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_POOL_REUSED, ps.reused,
+				      KDG_HA_UNSPEC) ||
+		    nla_put_u32(msg, KDG_HA_POOL_INFLIGHT, ps.inflight) ||
+		    nla_put_u32(msg, KDG_HA_POOL_QUEUED, ps.queued) ||
+		    nla_put_u32(msg, KDG_HA_POOL_STREAM_LIMIT,
+				ps.stream_limit) ||
+		    nla_put_u64_64bit(msg, KDG_HA_POOL_IDLE_CLOSES,
+				      ps.idle_closes, KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_POOL_CONN_ERRORS,
+				      ps.conn_errors, KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_POOL_UPSTREAM_TIMEOUTS,
+				      ps.upstream_timeouts, KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_POOL_REJECTED, ps.rejected,
+				      KDG_HA_UNSPEC) ||
+		    nla_put_u64_64bit(msg, KDG_HA_POOL_H1_FALLBACKS,
+				      ps.h1_fallbacks, KDG_HA_UNSPEC) ||
+		    nla_put_u32(msg, KDG_HA_POOL_SLOTS_USED, ps.slots_used) ||
+		    nla_put_u32(msg, KDG_HA_POOL_SLOTS_MAX, ps.slots_max) ||
+		    nla_put_u8(msg, KDG_HA_POOL_CONNECTED, ps.connected)) {
 			nla_nest_cancel(msg, nest);
 			goto nla_failure;
 		}

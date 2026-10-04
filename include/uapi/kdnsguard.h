@@ -151,6 +151,22 @@ enum kdg_health_attr {
 	KDG_HA_MAP_EVICTIONS,		/* u32 */
 	KDG_HA_MAP_REJECTED,		/* u32：超长名 / 歧义集合满 / 无槽位 */
 	KDG_HA_MAP_MEM_BYTES,		/* u32 */
+	/* 上游连接池（方案 §6.3）。这一组是「池化到底生效了没有」的直接证据：
+	 * connects 与 queries 的比值 = 平均一条连接服务了多少次查询。修复前
+	 * 这个比值恒为 1（每查询一条连接），修复后应当远大于 1。 */
+	KDG_HA_POOL_CONNECTS,		/* u64：建立过的连接数（TCP+TLS+H2） */
+	KDG_HA_POOL_REUSED,		/* u64：在既有连接上完成的查询数 */
+	KDG_HA_POOL_INFLIGHT,		/* u32：当前在途流数 */
+	KDG_HA_POOL_QUEUED,		/* u32：当前排队待提交的请求数 */
+	KDG_HA_POOL_STREAM_LIMIT,	/* u32：当前生效的并发流上限（32..64） */
+	KDG_HA_POOL_IDLE_CLOSES,	/* u64：因空闲超时被关闭的连接数 */
+	KDG_HA_POOL_CONN_ERRORS,	/* u64：连接级失败次数（连带失败在途流） */
+	KDG_HA_POOL_UPSTREAM_TIMEOUTS,	/* u64：超过 deadline 被取消的流 */
+	KDG_HA_POOL_REJECTED,		/* u64：槽位满、明确拒绝的查询数 */
+	KDG_HA_POOL_H1_FALLBACKS,	/* u64：对端不支持 h2、回落 H1 的次数 */
+	KDG_HA_POOL_SLOTS_USED,		/* u32：已用槽位 */
+	KDG_HA_POOL_SLOTS_MAX,		/* u32：槽位上限 */
+	KDG_HA_POOL_CONNECTED,		/* u8：连接当前是否可用 */
 	__KDG_HA_MAX,
 };
 #define KDG_HA_MAX (__KDG_HA_MAX - 1)

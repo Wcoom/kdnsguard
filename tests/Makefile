@@ -20,13 +20,14 @@ HTTP    := $(BUILD)/test_http
 CACHE   := $(BUILD)/test_cache
 CACHE_TAB := $(BUILD)/test_cache_tab
 MAP     := $(BUILD)/test_map
+POOL    := $(BUILD)/test_pool
 WIRE_SRC  := test_wire.c  ../kernel/kdg_wire.c
 HTTP_SRC  := test_http.c  ../kernel/kdg_http.c
 CACHE_SRC := test_cache.c ../kernel/kdg_cache.c ../kernel/kdg_wire.c
 
 .PHONY: all run clean
 
-all: $(WIRE) $(HTTP) $(CACHE) $(CACHE_TAB) $(MAP)
+all: $(WIRE) $(HTTP) $(CACHE) $(CACHE_TAB) $(MAP) $(POOL)
 
 $(WIRE): $(WIRE_SRC) ../kernel/kdg_wire.h ../include/kdg_base.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(WIRE_SRC)
@@ -43,6 +44,26 @@ $(CACHE_TAB): test_cache_tab.c host_kernel.h ../kernel/kdg_cache_tab.c ../kernel
 $(MAP): test_map.c host_kernel.h ../kernel/kdg_map.c ../kernel/kdg_map.h ../kernel/kdg_wire.c ../kernel/kdg_wire.h | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -I. -DKDG_HOST_TEST -o $@ test_map.c ../kernel/kdg_wire.c
 
+# ── 连接池并发测试 ──────────────────────────────────────────────────────
+# 这一个目标**不用** tests/include 的 linux/types.h，改用 tests/hostlinux/：
+# 池要包含 <linux/wait.h>、<linux/kthread.h> 等一整组头，替身是一整套而不是
+# 一个文件。两套 -I 同时在场会撞车（同名 linux/types.h），所以这里显式不带
+# -Iinclude。
+#
+# KDG_POOL_IDLE_MS 被压到 400 ms：方案要求 60–180 秒，照原值测「空闲关闭」
+# 要跑一分半。它只改测试时长，不改行为语义。
+POOL_CFLAGS := -std=gnu11 -O1 -g -Wall -Wextra -Werror \
+	       -fsanitize=address,undefined -fno-omit-frame-pointer \
+	       -fno-sanitize-recover=all -pthread \
+	       -Ihostlinux -I../include -I../kernel -I. \
+	       -DKDG_POOL_IDLE_MS=400
+
+$(POOL): test_pool.c hostlinux/hostshim.c hostlinux/hostshim.h \
+	 ../kernel/kdg_pool.c ../kernel/kdg_pool.h \
+	 ../kernel/kdg_upstream.h ../kernel/kdg_h2stream.h \
+	 ../kernel/kdg_doh.h ../kernel/kdg.h | $(BUILD)
+	$(CC) $(POOL_CFLAGS) -o $@ test_pool.c hostlinux/hostshim.c ../kernel/kdg_pool.c
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
@@ -52,6 +73,7 @@ run: all
 	@./$(CACHE)
 	@./$(CACHE_TAB)
 	@./$(MAP)
+	@./$(POOL)
 
 clean:
 	rm -rf $(BUILD)

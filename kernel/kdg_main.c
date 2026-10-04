@@ -216,9 +216,24 @@ static int __init kdg_init(void)
 		return ret;
 	}
 
+	/* 连接池只建槽位表，**不建线程** —— 驱动线程在第一次真正要查上游时
+	 * 才懒启动（方案 §9.3「无请求时 worker 睡眠」）。放在 TLS 之后：
+	 * 池的驱动线程要用 TLS 子系统，而它的第一条命令就是建连握手。 */
+	ret = kdg_pool_init();
+	if (ret) {
+		pr_err("上游连接池初始化失败: %d\n", ret);
+		kdg_sflight_exit();
+		kdg_quota_exit();
+		kdg_cache_tab_exit();
+		kdg_genl_exit();
+		kdg_tls_global_exit();
+		return ret;
+	}
+
 	ret = kdg_chardev_init();
 	if (ret) {
 		pr_err("字符设备注册失败: %d\n", ret);
+		kdg_pool_shutdown();
 		kdg_sflight_exit();
 		kdg_cache_tab_exit();
 		kdg_genl_exit();
@@ -230,6 +245,7 @@ static int __init kdg_init(void)
 	if (ret) {
 		pr_err("pernet 子系统注册失败: %d\n", ret);
 		kdg_chardev_exit();
+		kdg_pool_shutdown();
 		kdg_sflight_exit();
 		kdg_quota_exit();
 		kdg_cache_tab_exit();
@@ -260,6 +276,12 @@ static void __exit kdg_exit(void)
 	kdg_genl_exit();
 	unregister_pernet_subsys(&kdg_net_ops);
 	kdg_chardev_exit();
+	/* 连接池放在这里而不是更早：它要拆掉驱动线程与上游连接，而这两者
+	 * 只有在上面的 listener 与字符设备都停掉之后才确定没有调用方
+	 * （kdg_chardev_exit 等过 active_ops、kdg_listener_stop 等过
+	 * kthread_stop）。放在 kdg_tls_global_exit 之前是硬要求 ——
+	 * 驱动线程的收尾要发 TLS close_notify。 */
+	kdg_pool_shutdown();
 	kdg_sflight_exit();
 	kdg_quota_exit();
 	kdg_map_exit();

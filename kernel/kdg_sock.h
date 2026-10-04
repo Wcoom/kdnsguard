@@ -35,6 +35,17 @@ int kdg_sock_open(struct kdg_sock *ks);
 /* 设置收发超时（毫秒）。会同时作用于后续的 connect/send/recv。 */
 void kdg_sock_set_timeout(struct kdg_sock *ks, u32 timeout_ms);
 
+/*
+ * 只改**接收**超时。
+ *
+ * 为什么需要它、而不是一律用 kdg_sock_set_timeout：持久连接上「多久没收到
+ * 一个字节」与「这次发送最多能等多久」是两件完全不同的事。前者是**扫描滴答**
+ * （到了就回去看看有没有新请求要提交、有没有流要取消），后者是**失败判据**
+ * （写不出去就是这台上游不可用）。把它们绑成一个值，要么让取消变得迟钝，
+ * 要么让慢一点的写被判死。
+ */
+void kdg_sock_set_rcv_timeout(struct kdg_sock *ks, u32 timeout_ms);
+
 /* 连接到 IPv4 地址（网络字节序）。阻塞至连接建立或超时。 */
 int kdg_sock_connect4(struct kdg_sock *ks, u32 addr_be, u16 port_be);
 

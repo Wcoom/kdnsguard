@@ -50,6 +50,7 @@
 #include "kdg_resolve.h"
 #include "kdg_wire.h"
 #include "kdg_listener.h"
+#include "kdg_tls.h"
 
 #define KDG_LISTEN_BACKLOG 16
 #define KDG_LISTENER_RX_MAX KDG_MAX_WIRE_MSG

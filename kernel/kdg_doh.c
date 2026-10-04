@@ -1,6 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * kdg_doh.c —— DoH 上游查询实现。设计与约束见 kdg_doh.h。
+ * kdg_doh.c —— DoH 上游查询的**传输选择**层。
+ *
+ * 这一层现在只做两件事：
+ *   1. 前置校验（参数、信任锚是否配置），
+ *   2. 按方案 §6.3/§6.4 选传输 —— H2 走持久连接池（kdg_pool.c），
+ *      对端不支持 h2 时回落到一次性的 H1 兼容路径（本文件）。
+ *
+ * 它曾经是「一次查询一条连接」的全部实现。P6 第一轮实测证明那种形态在并发
+ * 下的代价是灾难性的（并发 64 时 p50 14 秒、随机 1000 条 CPU 是用户态基线的
+ * 707 倍，几乎全花在每查询一次的 TCP+TLS 握手上），因此主线换成了连接池；
+ * 这里保留的 H1 路径只服务「对端 ALPN 不是 h2」这一种情形，见
+ * `docs/P2-connection-pool.md`。
  */
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
 
@@ -14,7 +25,8 @@
 #include "kdg.h"
 #include "kdg_doh.h"
 #include "kdg_http.h"
-#include "kdg_h2.h"
+#include "kdg_tls.h"
+#include "kdg_pool.h"
 
 /* KDG_DOH_REQ_MAX / KDG_DOH_RX_MAX 见 kdg_doh.h —— 编排层也在用。
  * 接收缓冲之所以要这么大：方案 §7.4 要求这类大缓冲走有界堆分配、
@@ -41,13 +53,15 @@ void kdg_doh_default_cfg(struct kdg_doh_cfg *cfg)
 	cfg->deadline_ms = KDG_DEFAULT_DEADLINE_MS;
 }
 
-/*
- * 构造 DoH POST 请求（RFC 8484 §4.1）。
+/* ── H1 兼容路径（方案 §6.4）─────────────────────────────────────────────
  *
- * 用 Connection: close 而不是 keep-alive：本阶段一次查询一条连接，
- * 关闭式分帧省掉「响应边界靠 Content-Length 判断」之外的持久连接状态机，
- * 连接的收尾由对端 FIN 或我們的 shutdown 明确表达。P2 的连池会改成 keep-alive。
+ * 只在服务端不支持 h2 时走到。刻意保持「一次查询一条连接」：这条路径的存在
+ * 意义是「对端只认 HTTP/1.1 时也能解析」，不是性能。所以
+ *   - 用 Connection: close 而不是 keep-alive（关闭式分帧省掉持久连接状态机）；
+ *   - 不在这里做连接复用 —— 一条不支持的协商结果不值得再养一套分帧与边界
+ *     状态机。
  */
+
 static int kdg_doh_build_request(const struct kdg_doh_cfg *cfg,
 				 const u8 *q, size_t qlen,
 				 u8 *buf, size_t cap, size_t *outlen)
@@ -101,6 +115,12 @@ static int kdg_doh_read_response(struct kdg_tls *tls, u8 *rx, size_t cap,
 		}
 
 		ret = kdg_tls_read(tls, rx + got, cap - got);
+		if (ret == -EAGAIN) {
+			/* H1 路径上接收超时就是这次查询失败：它没有连接复用的
+			 * 需求，也就没有「滴答」这一说。 */
+			pr_warn("H1 响应读取超时\n");
+			return -ETIMEDOUT;
+		}
 		if (ret < 0)
 			return ret;
 		if (ret == 0)
@@ -196,9 +216,9 @@ static int kdg_doh_read_response(struct kdg_tls *tls, u8 *rx, size_t cap,
 	return 0;
 }
 
-int kdg_doh_query(const struct kdg_doh_cfg *cfg,
-		  const u8 *qwire, size_t qlen,
-		  u8 *rwire, size_t *rlen)
+static int kdg_doh_h1_query(const struct kdg_doh_cfg *cfg,
+			    const u8 *qwire, size_t qlen,
+			    u8 *rwire, size_t *rlen)
 {
 	struct kdg_sock sock;
 	struct kdg_tls tls;
@@ -207,29 +227,8 @@ int kdg_doh_query(const struct kdg_doh_cfg *cfg,
 	const u8 *body = NULL;
 	size_t bodylen = 0, txlen = 0;
 	u32 status = 0;
-	ktime_t t0;
 	int ret;
 	bool sock_open = false, tls_open = false;
-
-	if (!cfg || !qwire || !rwire || !rlen)
-		return -EINVAL;
-	if (qlen == 0 || qlen > KDG_MAX_WIRE_MSG)
-		return -EMSGSIZE;
-
-	st->queries++;
-	t0 = ktime_get();
-
-	/* 信任锚为空时立刻拒绝：与其发起一次注定验证失败的握手，不如给出
-	 * 明确的 -EAGAIN，让上层知道「是没配置，不是上游坏了」。 */
-	if (kdg_tls_ca_count() == 0) {
-		pr_warn_ratelimited("信任锚未配置，拒绝发起 DoH 查询\n");
-		st->last_errno = -EAGAIN;
-		return -EAGAIN;
-	}
-
-	/* 方案 §6.2 的「单一执行者」：整个会话（建连→握手→请求→响应→关闭）
-	 * 期间独占，避免并发进入 mbedTLS 的共享 DRBG 与 CA 链。 */
-	kdg_tls_lock();
 
 	tx = kmalloc(KDG_DOH_REQ_MAX, GFP_KERNEL);
 	rx = kmalloc(KDG_DOH_RX_MAX, GFP_KERNEL);
@@ -260,41 +259,17 @@ int kdg_doh_query(const struct kdg_doh_cfg *cfg,
 		goto out;
 	tls_open = true;
 
+	/* 只罩握手：DRBG 由 kdg_tls_rng 自己串行化，CA 链只在握手期间被读。
+	 * 早先这里是罩**整条查询**的，那会让一次 H1 查询把连接池的握手堵住
+	 * 整整一个 deadline。 */
+	kdg_tls_lock();
 	ret = kdg_tls_handshake(&tls);
+	kdg_tls_unlock();
 	if (ret) {
 		st->tls_fail++;
 		goto out;
 	}
 
-	/*
-	 * 传输选择：按 ALPN 协商结果在 H2 与 H1 之间选（方案 §6.3/§6.4）。
-	 * H2 是主线目标，H1 是兼容路径 —— 服务端不支持 h2 时自动回落，
-	 * 不需要额外探测：ALPN 没协商出 h2 就说明它只支持 1.1。
-	 */
-	{
-		const char *alpn = kdg_tls_alpn(&tls);
-
-	/* ALPN 未协商出任何协议时 kdg_tls_alpn 返回 NULL —— 直接 strcmp 会崩。
-	 * 此时按 H1 处理是安全默认：H1 不需要 ALPN 协商即可工作。 */
-	if (alpn && strcmp(alpn, "h2") == 0) {
-		size_t hl = *rlen;
-
-		ret = kdg_h2_doh_request(&tls, cfg->hostname, cfg->path,
-					 qwire, qlen, rwire, hl, &hl);
-		if (ret) {
-			st->http_fail++;
-			st->last_errno = (u32)ret;
-			goto out;
-		}
-		*rlen = hl;
-		st->ok++;
-		st->last_errno = 0;
-		st->last_http_status = 200;
-		goto out;
-	}
-	}
-
-	/* H1 兼容路径 */
 	ret = kdg_tls_write(&tls, tx, txlen);
 	if (ret) {
 		st->net_fail++;
@@ -316,21 +291,72 @@ int kdg_doh_query(const struct kdg_doh_cfg *cfg,
 	/* body 与 rx 有重叠的可能（chunked 就地解码），用 memmove 而非 memcpy。 */
 	memmove(rwire, body, bodylen);
 	*rlen = bodylen;
-
-	st->ok++;
-	st->last_errno = 0;
 	ret = 0;
 
 out:
-	if (ret)
-		st->last_errno = (u32)ret;
 	if (tls_open)
 		kdg_tls_session_close(&tls);
 	if (sock_open)
 		kdg_sock_close(&sock);
 	kfree(tx);
 	kfree(rx);
+	return ret;
+}
+
+/* ── 传输选择 ────────────────────────────────────────────────────────── */
+
+int kdg_doh_query(const struct kdg_doh_cfg *cfg,
+		  const u8 *qwire, size_t qlen,
+		  u8 *rwire, size_t *rlen)
+{
+	struct kdg_doh_stats *st = &g_stats;
+	ktime_t t0;
+	int ret;
+
+	if (!cfg || !qwire || !rwire || !rlen)
+		return -EINVAL;
+	if (qlen == 0 || qlen > KDG_MAX_WIRE_MSG)
+		return -EMSGSIZE;
+
+	st->queries++;
+	t0 = ktime_get();
+
+	/* 信任锚为空时立刻拒绝：与其发起一次注定验证失败的握手，不如给出
+	 * 明确的 -EAGAIN，让上层知道「是没配置，不是上游坏了」。 */
+	if (kdg_tls_ca_count() == 0) {
+		pr_warn_ratelimited("信任锚未配置，拒绝发起 DoH 查询\n");
+		st->last_errno = -EAGAIN;
+		return -EAGAIN;
+	}
+
+	/* 主线：持久连接 + H2 多路复用（方案 §6.3）。 */
+	ret = kdg_pool_query(cfg, qwire, qlen, rwire, rlen);
+	if (ret != -EPROTONOSUPPORT) {
+		if (ret) {
+			st->http_fail++;
+			st->last_errno = (u32)ret;
+		} else {
+			st->ok++;
+			st->last_errno = 0;
+			st->last_http_status = 200;
+		}
+		st->last_rtt_ms = (u32)ktime_ms_delta(ktime_get(), t0);
+		return ret;
+	}
+
+	/*
+	 * 只有「对端 ALPN 不是 h2」才回落。其它失败（超时、TLS 失败、上游 5xx）
+	 * **不**回落 —— 用一条一次性的 H1 连接去重试一个已经坏了的上游，只会
+	 * 把一次失败变成两次，并且掩盖真实原因。
+	 */
+	st->h1_fallbacks++;
+	ret = kdg_doh_h1_query(cfg, qwire, qlen, rwire, rlen);
+	if (ret) {
+		st->last_errno = (u32)ret;
+	} else {
+		st->ok++;
+		st->last_errno = 0;
+	}
 	st->last_rtt_ms = (u32)ktime_ms_delta(ktime_get(), t0);
-	kdg_tls_unlock();
 	return ret;
 }

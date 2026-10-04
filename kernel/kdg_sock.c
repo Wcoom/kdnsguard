@@ -70,6 +70,16 @@ void kdg_sock_set_timeout(struct kdg_sock *ks, u32 timeout_ms)
 	ks->sock->sk->sk_sndtimeo = msecs_to_jiffies(timeout_ms);
 }
 
+void kdg_sock_set_rcv_timeout(struct kdg_sock *ks, u32 timeout_ms)
+{
+	if (!ks || !ks->sock || !ks->sock->sk)
+		return;
+
+	/* 刻意**不**动 ks->timeout_ms：那个字段记录的是「这条连接对外的
+	 * deadline」，扫描滴答不该把它改小。 */
+	ks->sock->sk->sk_rcvtimeo = msecs_to_jiffies(timeout_ms);
+}
+
 int kdg_sock_connect4(struct kdg_sock *ks, u32 addr_be, u16 port_be)
 {
 	struct sockaddr_in sa;
