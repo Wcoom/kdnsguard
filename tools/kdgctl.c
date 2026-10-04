@@ -83,6 +83,25 @@ static long sys6(long n, long a, long b, long c, long d, long e, long f)
 #define SYS_bind	200
 #define SYS_sendto	206
 #define SYS_recvfrom	207
+#define SYS_setsockopt	208
+
+/* 给 netlink socket 装上接收超时：处理器若既不回包也不回 ACK，
+ * recvfrom 会永久阻塞，诊断工具卡死比报错更难排查。 */
+#define SOL_SOCKET_	1
+#define SO_RCVTIMEO_	20
+
+struct kdg_timeval {
+	long tv_sec;
+	long tv_usec;
+};
+
+static void set_recv_timeout(int fd, long seconds)
+{
+	struct kdg_timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
+
+	sys6(SYS_setsockopt, fd, SOL_SOCKET_, SO_RCVTIMEO_, (long)&tv,
+	     sizeof(tv), 0);
+}
 
 /* ── 最小输出 ─────────────────────────────────────────────────────────── */
 
@@ -166,6 +185,9 @@ struct sockaddr_nl {
 #define SOCK_RAW_		3
 #define NETLINK_GENERIC_	16
 #define NLM_F_REQUEST_		0x01
+/* 必须带 ACK：PREPARE/COMMIT/DISABLE 的处理器只返回错误码、不构造回包，
+ * 不带 ACK 时内核一个字节都不回，recvfrom 会永久阻塞（实测踩过）。 */
+#define NLM_F_ACK_		0x04
 #define GENL_ID_CTRL_		0x10
 
 #define CTRL_CMD_GETFAMILY_	3
@@ -282,6 +304,7 @@ static u16 resolve_family(u16 *version)
 	fd = (int)sys3(SYS_socket, AF_NETLINK_, SOCK_RAW_, NETLINK_GENERIC_);
 	if (fd < 0)
 		return 0;
+	set_recv_timeout(fd, 5);
 	dst.nl_family = AF_NETLINK_;
 	dst.nl_pad = 0;
 	dst.nl_pid = 0;
@@ -620,7 +643,7 @@ static int genl_send_attrs(u16 fam, u8 cmd, const struct kdg_attr_ref *attrs,
 
 	nh->nlmsg_len = sizeof(*nh) + sizeof(*gh);
 	nh->nlmsg_type = fam;
-	nh->nlmsg_flags = NLM_F_REQUEST_;
+	nh->nlmsg_flags = NLM_F_REQUEST_ | NLM_F_ACK_;
 	nh->nlmsg_seq = 3;
 	nh->nlmsg_pid = 0;
 	gh = (struct genlmsghdr *)(txbuf + sizeof(*nh));
@@ -639,6 +662,7 @@ static int genl_send_attrs(u16 fam, u8 cmd, const struct kdg_attr_ref *attrs,
 	fd = (int)sys3(SYS_socket, AF_NETLINK_, SOCK_RAW_, NETLINK_GENERIC_);
 	if (fd < 0)
 		return -1;
+	set_recv_timeout(fd, 10);
 	dst.nl_family = AF_NETLINK_;
 	dst.nl_pad = 0;
 	dst.nl_pid = 0;
