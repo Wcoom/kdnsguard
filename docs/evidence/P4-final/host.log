@@ -1,0 +1,502 @@
+
+======== 0. 推送产物 ========
+/home/wcoom/桌面/kdnsguard/kernel/kdnsguard.ko: 1 file pushed, 0 skipped. 250.8 MB/s (1932360 bytes in 0.007s)
+/home/wcoom/桌面/kdnsguard/tools/kdgctl: 1 file pushed, 0 skipped. 94.6 MB/s (67584 bytes in 0.001s)
+/home/wcoom/桌面/kdnsguard/tools/chrneg: 1 file pushed, 0 skipped. 249.8 MB/s (2140520 bytes in 0.008s)
+/tmp/mihomo-kdgp4final: 1 file pushed, 0 skipped. 316.5 MB/s (50056440 bytes in 0.151s)
+/tmp/kdg-final/startup-kernel.yaml: 1 file pushed, 0 skipped. 143.7 MB/s (37812 bytes in 0.000s)
+/tmp/kdg-final/startup-userspace.yaml: 1 file pushed, 0 skipped. 255.6 MB/s (37682 bytes in 0.000s)
+
+======== 1. 预检 ========
+### time Mon Oct  5 09:19:44 CST 2026 uptime=12847.75
+### uname
+Linux localhost 6.6.118-android15-8-gf4dc45704e54-abogki20260727-4k #16 SMP PREEMPT Mon May 12 09:09:59 UTC 2025 aarch64 Toybox
+### kernel build
+Linux version 6.6.118-android15-8-gf4dc45704e54-abogki20260727-4k (wcoom@wcoom) (ZyC clang version 19.0.0git (https://github.com/llvm/llvm-project b5f23e56902ec37c6ac1c13f21ba5d863d66b3de), LLD 19.0.0 (https://github.com/llvm/llvm-project b5f23e56902ec37c6ac1c13f21ba5d863d66b3de)) #16 SMP PREEMPT Mon May 12 09:09:59 UTC 2025
+### private_dns
+off
+a596382545.6.00p.net
+### modules
+670
+kdnsguard 未加载
+### /dev/kdnsguard
+crw-rw---- 1 root root 440,   0 2026-10-05 05:48 /dev/kdnsguard
+### ddl
+1
+### zram
+lzo lzo-rle [lz4] lz4kd lz4kds deflate zstd 
+### su
+uid=0(root) gid=0(root) groups=0(root),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),1078(ext_data_rw),1079(ext_obb_rw),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid),3012(readtracefs) context=u:r:ksu:s0
+### mihomo bin
+-rwsr-sr-x 1 root net_admin u:object_r:app_data_file:s0  56688993 2026-09-10 17:28 /data/user/0/com.boxproxy.box/files/box/bin/mihomo
+0d5e82a14dc74ab9912ada7bcd87b44f  /data/user/0/com.boxproxy.box/files/box/bin/mihomo
+### startup-config
+-rw------- 1 root root 37682 2026-10-03 16:24 /data/user/0/com.boxproxy.box/files/box/run/state/startup-config
+0a82d3f0674a61c99bd7057d03dfc5ef  /data/user/0/com.boxproxy.box/files/box/run/state/startup-config
+### boxctl status
+状态: 核心 mihomo, 模式 ebpf, TUN , tproxy 9898, redir 9797, DNS tproxy:1053, 性能模式 禁用
+核心配置读取: 已读取 mihomo 配置, 配置 /data/user/0/com.boxproxy.box/files/box/run/state/startup-config, TPROXY 9898(核心配置), REDIRECT 9797(核心配置), DNS 端口 1053(核心配置), TUN -(不适用), Fake-IP IPv4 198.18.0.1/15(核心配置), Fake-IP IPv6 fdfe:dcba:9876::1/64(核心配置)
+服务状态: 核心 mihomo, PID 文件 /data/user/0/com.boxproxy.box/files/box/run/box.pid
+mihomo 未运行
+### pidof mihomo
+stopped
+### dmesg warn
+0
+### iptables owner match?
+owner-check-rc=1
+owner-insert-rc=1
+### iptables nat 53/1053
+### ss 53/1053/9090
+LISTEN      0      5      127.0.0.1:53                 0.0.0.0:*                   users:(("dnsmasq",pid=13123,fd=13))
+LISTEN      0      5      172.31.172.56:53                 0.0.0.0:*                   users:(("dnsmasq",pid=13123,fd=11))
+LISTEN      0      5        [::1]:53                    [::]:*                   users:(("dnsmasq",pid=13123,fd=6))
+LISTEN      0      5      [fe80::2826:cfff:fe40:abec]%rndis0:53                    [::]:*                   users:(("dnsmasq",pid=13123,fd=4))
+LISTEN      0      5         [240a:42ea:800:1b4a::e4]:53                    [::]:*                   users:(("dnsmasq",pid=13123,fd=15))
+### rndis
+32: rndis0    inet 172.31.172.56/24 brd 172.31.172.255 scope global rndis0\       valid_lft forever preferred_lft forever
+### kdgctl present
+-rwxr-xr-x 1 root root 2140520 2026-10-05 09:12 /data/local/tmp/chrneg
+-rw-rw-rw- 1 root root    1598 2026-10-03 18:30 /data/local/tmp/kdg_root.pem
+-rwxr-xr-x 1 root root   67584 2026-10-05 07:46 /data/local/tmp/kdgctl
+-rwxrwxrwx 1 root root 2164256 2026-10-05 04:49 /data/local/tmp/netprobe
+WROTE /data/local/tmp/kdg-final/preflight.txt
+
+======== 2. 部署（换核心+配置+模块） ========
+########## 1. 备份 ##########
+bin=0d5e82a14dc74ab9912ada7bcd87b44f
+cfg=0a82d3f0674a61c99bd7057d03dfc5ef
+########## 2. 停核心（进程在跑时 cp 会 Text file busy）##########
+服务停止: 核心 mihomo, PID 文件 /data/user/0/com.boxproxy.box/files/box/run/box.pid
+服务未运行: mihomo
+mihomo 已停
+########## 3. 原子替换核心 ##########
+新核心 md5=dae11afe14b0d19d07fac0a1c0795b73
+Mihomo Meta 1.10.0-kdgp4final android arm64 with go1.25.14 2026年 10月 05日 星期一 01:04:38 UTC
+Use tags: with_gvisor
+########## 4. 换配置 ##########
+新配置 md5=b868f3a979a6b27a7dbb5916808e74e9
+130:  enhanced-mode: redir-host
+131:  backend: kernel
+132:  kernel-device: /dev/kdnsguard
+133:  kernel-trust-file: /data/local/tmp/kdg_root.pem
+134:  kernel-delegate-ebpf: false
+1358:  dns-mode: off
+########## 5. 加载模块 ##########
+major=440
+node=crw-rw---- 1 root root 440,   0 2026-10-05 09:19 /dev/kdnsguard
+########## 6. 启动核心 ##########
+配置检查通过: mihomo
+服务启动命令: /data/user/0/com.boxproxy.box/files/box/bin/mihomo -d /data/user/0/com.boxproxy.box/files/box/mihomo -f /data/user/0/com.boxproxy.box/files/box/run/state/startup-config
+服务已启动: mihomo PID 31721
+资源限制: 已关闭
+mihomo pid=31721
+--- mihomo 后端判定 ---
+time="2026-10-05T09:19:52.135495784+08:00" level=info msg="kernel DNS backend active: 53 ownership handed to the kernel (device=/dev/kdnsguard)"
+--- 内核 health ---
+  attr 1 ownership len=4  2 (0x00000002)
+  attr 6 nat_seen len=8  0
+  attr 7 nat_redirected len=8  0
+  attr 8 nat_bypassed len=8  0
+  attr 9 nat_hook_calls len=8  36
+  attr 36 nat_fwd_seen len=8  0
+  attr 37 nat_fwd_bypassed len=8  0
+  attr 38 nat_sport53 len=8  0
+  attr 39 client_ifaces len=4  1 (0x00000001)
+  attr 40 listener_ready len=1  1
+  attr 41 map_entries len=4  27 (0x0000001b)
+  attr 42 map_hits len=8  0
+  attr 43 map_misses len=8  0
+  attr 44 map_evictions len=4  0 (0x00000000)
+  attr 45 map_rejected len=4  0 (0x00000000)
+  attr 46 map_mem_bytes len=4  331776 (0x00051000)
+  attr 11 doh_queries len=8  39
+  attr 12 doh_ok len=8  33
+  attr 13 doh_last_status len=4  200 (0x000000c8)
+  attr 14 doh_last_rtt_ms len=4  329 (0x00000149)
+  attr 47 pool_connects len=8  1
+  attr 48 pool_reused len=8  38
+  attr 49 pool_inflight len=4  5 (0x00000005)
+  attr 50 pool_queued len=4  1 (0x00000001)
+  attr 51 pool_stream_limit len=4  64 (0x00000040)
+  attr 52 pool_idle_closes len=8  0
+  attr 53 pool_conn_errors len=8  0
+  attr 54 pool_upstream_timeouts len=8  0
+  attr 55 pool_rejected len=8  0
+  attr 56 pool_h1_fallbacks len=8  0
+  attr 57 pool_slots_used len=4  6 (0x00000006)
+  attr 58 pool_slots_max len=4  128 (0x00000080)
+  attr 59 pool_connected len=1  1
+DEPLOY_OK
+
+======== 3. 接管矩阵 ========
+########## A. 内核健康 ##########
+  attr 1 ownership len=4  2 (0x00000002)
+  attr 6 nat_seen len=8  0
+  attr 7 nat_redirected len=8  0
+  attr 8 nat_bypassed len=8  0
+  attr 9 nat_hook_calls len=8  36
+  attr 36 nat_fwd_seen len=8  0
+  attr 37 nat_fwd_bypassed len=8  0
+  attr 38 nat_sport53 len=8  0
+  attr 40 listener_ready len=1  1
+  attr 41 map_entries len=4  27 (0x0000001b)
+  attr 42 map_hits len=8  0
+  attr 43 map_misses len=8  0
+  attr 44 map_evictions len=4  0 (0x00000000)
+  attr 45 map_rejected len=4  0 (0x00000000)
+  attr 46 map_mem_bytes len=4  331776 (0x00051000)
+  attr 11 doh_queries len=8  42
+  attr 12 doh_ok len=8  36
+  attr 13 doh_last_status len=4  200 (0x000000c8)
+  attr 14 doh_last_rtt_ms len=4  369 (0x00000171)
+  attr 31 h2_sessions len=8  1
+  attr 32 h2_requests len=8  41
+  attr 33 h2_ok len=8  36
+  attr 47 pool_connects len=8  1
+  attr 48 pool_reused len=8  41
+  attr 49 pool_inflight len=4  5 (0x00000005)
+  attr 50 pool_queued len=4  1 (0x00000001)
+  attr 51 pool_stream_limit len=4  64 (0x00000040)
+  attr 52 pool_idle_closes len=8  0
+  attr 53 pool_conn_errors len=8  0
+  attr 54 pool_upstream_timeouts len=8  0
+  attr 55 pool_rejected len=8  0
+  attr 56 pool_h1_fallbacks len=8  0
+  attr 57 pool_slots_used len=4  6 (0x00000006)
+  attr 58 pool_slots_max len=4  128 (0x00000080)
+  attr 59 pool_connected len=1  1
+
+########## B. App 视角 UDP/TCP IPv4（peer 必须是真实 DNS IP，不是 127.x）##########
+uid=0 mode=udp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:54170
+bytes=72 match=0 rcode=0 answers=2 elapsed_ms=89
+uid=0 mode=tcp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:53912
+bytes=72 match=0 rcode=0 answers=2 elapsed_ms=1
+uid=0 mode=udp target=8.8.8.8:53
+peer=8.8.8.8:53
+local=10.1.167.118:49077
+bytes=55 match=0 rcode=0 answers=1 elapsed_ms=0
+
+########## C. App 视角 IPv6（当前 eBPF ipv6-mode=off，走 LOCAL_OUT NAT）##########
+uid=0 mode=udp target=2001:4860:4860::8888:53
+peer=[2001:4860:4860::8888]:53
+local=[240a:42ea:800:1b4a:104f:42ff:feeb:485e]:60437
+bytes=72 match=0 rcode=0 answers=2 elapsed_ms=0
+uid=0 mode=tcp target=2001:4860:4860::8888:53
+peer=[2001:4860:4860::8888]:53
+local=[240a:42ea:800:1b4a:104f:42ff:feeb:485e]:41866
+bytes=72 match=0 rcode=0 answers=2 elapsed_ms=0
+
+########## D. 字符设备查询（mihomo 内部走同一条）##########
+example.com      104.20.23.154 172.66.147.243 
+www.baidu.com    36.152.44.132 36.152.44.93 
+github.com       20.27.177.113 
+  attr 41 map_entries len=4  30 (0x0000001e)
+  attr 11 doh_queries len=8  44
+  attr 12 doh_ok len=8  44
+  attr 47 pool_connects len=8  1
+  attr 48 pool_reused len=8  43
+
+########## E. IP-only 连接反查（enhancer 路径）##########
+example.com A=104.20.23.154
+map_hits 0 -> 
+grep: Unknown option '> example.com' (see "grep --help")
+
+########## F. 无明文 UDP 53 旁路（114/8.8.8.8 的 conntrack）##########
+ipv4     2 udp      17 28 src=10.1.167.118 dst=8.8.8.8 sport=49077 dport=53 src=127.0.0.1 dst=10.1.167.118 sport=1054 dport=49077 mark=0 secctx=u:object_r:unlabeled:s0 use=2
+conntrack-114/8.8-dport53=1
+
+########## G. DoH 上游 443 的 socket 归属（应无 mihomo 用户态）##########
+mihomo-owned-443=0
+--- 上游 49.234.186.103:443 ---
+ipv4     2 tcp      6 429858 LAST_ACK src=172.31.172.66 dst=49.234.186.103 sport=47032 dport=443 src=49.234.186.103 dst=10.1.167.118 sport=443 dport=47032 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 431058 CLOSE src=172.31.172.66 dst=49.234.186.103 sport=56958 dport=443 src=49.234.186.103 dst=10.1.167.118 sport=443 dport=56958 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 429858 LAST_ACK src=172.31.172.66 dst=49.234.186.103 sport=47004 dport=443 src=49.234.186.103 dst=10.1.167.118 sport=443 dport=47004 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+
+########## H. 1053 不应再有用户态 DNS 监听 ##########
+1053 无 UDP 监听（预期）
+1053 无 TCP 监听（预期）
+
+########## I. conntrack 反向映射（本机 LOCAL_OUT）##########
+ipv4     2 udp      17 28 src=10.1.167.118 dst=223.5.5.5 sport=54170 dport=53 src=127.0.0.1 dst=10.1.167.118 sport=1054 dport=54170 mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 tcp      6 118 TIME_WAIT src=10.1.167.118 dst=223.5.5.5 sport=53912 dport=53 src=127.0.0.1 dst=10.1.167.118 sport=1054 dport=53912 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv4     2 udp      17 28 src=10.1.167.118 dst=8.8.8.8 sport=49077 dport=53 src=127.0.0.1 dst=10.1.167.118 sport=1054 dport=49077 mark=0 secctx=u:object_r:unlabeled:s0 use=2
+
+########## J. 告警 ##########
+告警=0
+MATRIX_OK
+
+======== 4. 笔记本 → 手机 rndis DNS（热点 PREROUTING） ========
+rndis0=172.31.172.56  laptop=172.31.172.66
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 57754
+;; flags: qr rd ra; QUERY: 1, ANSWER: 2, AUTHORITY: 0, ADDITIONAL: 1
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 1232
+;; QUESTION SECTION:
+;example.com.			IN	A
+
+;; ANSWER SECTION:
+example.com.		297	IN	A	104.20.23.154
+example.com.		297	IN	A	172.66.147.243
+
+;; Query time: 50 msec
+;; SERVER: 172.31.172.56#53(172.31.172.56) (UDP)
+;; WHEN: Mon Oct 05 09:19:55 CST 2026
+;; MSG SIZE  rcvd: 72
+
+
+======== 5. adb forward 控制器 + 延迟测试（节点解析走 KernelResolver） ========
+19090
+{"meta":true,"version":"1.10.0-kdgp4final"}
+delay targets: []
+
+======== 5b. 武装 uid-0 REJECT 再打 delay ========
+########## 插入 uid-0 dport-53 REJECT ##########
+iptables: Invalid argument. Run `dmesg' for more information.
+iptables: Invalid argument. Run `dmesg' for more information.
+rules:
+
+########## App 查询仍应成功（NAT 改写发生在 mangle 之后？）##########
+--- netprobe as root（预期失败，证明规则活着）---
+uid=0 mode=udp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:56276
+bytes=72 match=0 rcode=0 answers=2 elapsed_ms=0
+
+########## 计数器清零点 ##########
+OWNER_ARMED
+DNSQ 200 b'{"AD":false,"Additional":[{"TTL":0,"data":"ON:\\n; EDNS: version 0; flags:; udp: 1232","name":".","type":41}],"Answer":[{"TTL":296,"data":"104.20.23.154","name":"example.com.","type":1},{"TTL":296,"dat'
+########## uid-0 规则计数（mihomo 内部 Lookup 期间）##########
+########## conntrack 114/8.8 dport=53 ##########
+ipv4     2 udp      17 26 src=10.1.167.118 dst=8.8.8.8 sport=49077 dport=53 src=127.0.0.1 dst=10.1.167.118 sport=1054 dport=49077 mark=0 secctx=u:object_r:unlabeled:s0 use=2
+########## 拆除 ##########
+规则已清
+OWNER_DISARMED
+
+======== 6. 热重载：同配置 PUT（应复用，不 EBUSY） ========
+RELOAD_KERNEL 204 b''
+  attr 1 ownership len=4  2 (0x00000002)
+  attr 40 listener_ready len=1  1
+/system/bin/sh: falling: inaccessible or not found
+/system/bin/sh: panic: inaccessible or not found
+grep: DNS: No such file or directory
+grep: backend: No such file or directory
+
+======== 7. 热重载：切到无 kernel backend 的用户态（验证 PatchFrom 不 panic） ========
+RELOAD_USER 204 b''
+/system/bin/sh: falling: inaccessible or not found
+/system/bin/sh: panic: inaccessible or not found
+/system/bin/sh: PatchFrom: inaccessible or not found
+grep: DNS: No such file or directory
+grep: backend: No such file or directory
+  attr 1 ownership len=4  0 (0x00000000)
+
+======== 7b. 切回 kernel backend ========
+RELOAD_BACK 204 b''
+  attr 1 ownership len=4  0 (0x00000000)
+  attr 40 listener_ready len=1  0
+  attr 12 doh_ok len=8  50
+/system/bin/sh: falling: inaccessible or not found
+grep: DNS: No such file or directory
+grep: backend: No such file or directory
+grep: active: No such file or directory
+
+======== 8. 故障注入 ========
+########## 0. 注入前基线 ##########
+uid=0 mode=udp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:59133
+bytes=61 match=0 rcode=0 answers=2 elapsed_ms=34
+
+########## 1. REJECT 上游 ##########
+rule in=1
+
+########## 2. App 查询应 SERVFAIL ~1s ##########
+uid=0 mode=udp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:33738
+bytes=112 match=0 rcode=3 answers=0 elapsed_ms=94
+uid=0 mode=tcp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:59224
+bytes=112 match=0 rcode=3 answers=0 elapsed_ms=41
+
+########## 3. 字符设备同样失败 ##########
+响应: status=8 errno=110 cookie=0x55667788 resp_len=0
+查询未成功
+
+########## 4. 无运营商回落：不应出现新的 53 外发到非上游 ##########
+ipv6     10 tcp      6 98 TIME_WAIT src=240a:42ea:0800:1b4a:104f:42ff:feeb:485e dst=2001:4860:4860:0000:0000:0000:0000:8888 sport=41866 dport=53 src=0000:0000:0000:0000:0000:0000:0000:0001 dst=240a:42ea:0800:1b4a:104f:42ff:feeb:485e sport=1054 dport=41866 [ASSURED] mark=0 secctx=u:object_r:unlabeled:s0 use=2
+ipv6     10 udp      17 8 src=240a:42ea:0800:1b4a:104f:42ff:feeb:485e dst=2001:4860:4860:0000:0000:0000:0000:8888 sport=60437 dport=53 src=0000:0000:0000:0000:0000:0000:0000:0001 dst=240a:42ea:0800:1b4a:104f:42ff:feeb:485e sport=1054 dport=60437 mark=0 secctx=u:object_r:unlabeled:s0 use=2
+
+########## 5. 解除注入 ##########
+rule left=0
+uid=0 mode=udp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:43431
+bytes=61 match=0 rcode=0 answers=2 elapsed_ms=21
+INJECT_OK
+
+======== 9. SIGKILL + EBUSY 回收 ========
+########## 0. kill 前 ##########
+pid=31721
+  attr 1 ownership len=4  0 (0x00000000)
+uid=0 mode=udp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:35841
+bytes=61 match=0 rcode=0 answers=2 elapsed_ms=31
+
+########## 1. SIGKILL ##########
+pid-after-kill=none
+--- 内核仍应答？ ---
+uid=0 mode=udp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:44568
+bytes=61 match=0 rcode=0 answers=2 elapsed_ms=32
+  attr 1 ownership len=4  0 (0x00000000)
+  attr 40 listener_ready len=1  0
+
+########## 2. boxctl restart（应 EBUSY 回收）##########
+配置检查缓存命中: /data/user/0/com.boxproxy.box/files/box/run/state/startup-config
+服务启动命令: /data/user/0/com.boxproxy.box/files/box/bin/mihomo -d /data/user/0/com.boxproxy.box/files/box/mihomo -f /data/user/0/com.boxproxy.box/files/box/run/state/startup-config
+服务已启动: mihomo PID 2486
+资源限制: 已关闭
+pid=2486
+--- mihomo 日志（应见 reclaim / active）---
+time="2026-10-05T09:20:17.402882472+08:00" level=error msg="kernel DNS backend PREPARE failed: prepare kernel dns ownership: kdnsguard transaction 2: netlink receive: address already in use"
+time="2026-10-05T09:20:17.402916899+08:00" level=error msg="kernel DNS backend unavailable; falling back to the userspace resolver pipeline"
+  attr 1 ownership len=4  0 (0x00000000)
+  attr 40 listener_ready len=1  0
+  attr 12 doh_ok len=8  51
+uid=0 mode=udp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:41982
+bytes=61 match=0 rcode=0 answers=2 elapsed_ms=24
+KILL_OK
+
+======== 10. 还原（chrneg + 原二进制/配置 + rmmod） ========
+########## 1. 停核心 ##########
+服务停止: 核心 mihomo, PID 文件 /data/user/0/com.boxproxy.box/files/box/run/box.pid
+服务停止: mihomo PID 2486 发送 SIGTERM
+服务已停止: mihomo
+pid=none
+########## 2. 字符设备失败路径（必须在 rmmod 之前）##########
+chrneg: 10 个用例 × 64 次，失败 0
+chrneg rc=0
+########## 3. 交还所有权 ##########
+DISABLE 成功（ownership 已归还）
+  attr 1 ownership len=4  0 (0x00000000)
+########## 4. 原二进制 ##########
+bin md5=0d5e82a14dc74ab9912ada7bcd87b44f  orig=0d5e82a14dc74ab9912ada7bcd87b44f
+########## 5. 原配置 ##########
+cfg md5=0a82d3f0674a61c99bd7057d03dfc5ef  orig=0a82d3f0674a61c99bd7057d03dfc5ef
+130:  enhanced-mode: fake-ip
+1354:  dns-mode: hijack
+########## 6. 卸模块 ##########
+模块未加载
+kdg_pool 线程=0
+########## 7. 终态 ##########
+modules=670
+warn=0
+private_dns=off
+ddl=1
+zram=lzo lzo-rle [lz4] lz4kd lz4kds deflate zstd 
+su=uid=0(root) gid=0(root) groups=0(root),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),1078(ext_data_rw),1079(ext_obb_rw),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid),3012(readtracefs) context=u:r:ksu:s0
+状态: 核心 mihomo, 模式 ebpf, TUN , tproxy 9898, redir 9797, DNS tproxy:1053, 性能模式 禁用
+核心配置读取: 已读取 mihomo 配置, 配置 /data/user/0/com.boxproxy.box/files/box/run/state/startup-config, TPROXY 9898(核心配置), REDIRECT 9797(核心配置), DNS 端口 1053(核心配置), TUN -(不适用), Fake-IP IPv4 198.18.0.1/15(核心配置), Fake-IP IPv6 fdfe:dcba:9876::1/64(核心配置)
+服务状态: 核心 mihomo, PID 文件 /data/user/0/com.boxproxy.box/files/box/run/box.pid
+mihomo 未运行
+RESTORE_OK
+
+======== 11. 终态核对 ========
+Linux localhost 6.6.118-android15-8-gf4dc45704e54-abogki20260727-4k #16 SMP PREEMPT Mon May 12 09:09:59 UTC 2025 aarch64 Toybox
+### kernel build
+Linux version 6.6.118-android15-8-gf4dc45704e54-abogki20260727-4k (wcoom@wcoom) (ZyC clang version 19.0.0git (https://github.com/llvm/llvm-project b5f23e56902ec37c6ac1c13f21ba5d863d66b3de), LLD 19.0.0 (https://github.com/llvm/llvm-project b5f23e56902ec37c6ac1c13f21ba5d863d66b3de)) #16 SMP PREEMPT Mon May 12 09:09:59 UTC 2025
+### private_dns
+off
+a596382545.6.00p.net
+### modules
+670
+kdnsguard 未加载
+### /dev/kdnsguard
+crw-rw---- 1 root root 440,   0 2026-10-05 09:19 /dev/kdnsguard
+### ddl
+1
+### zram
+lzo lzo-rle [lz4] lz4kd lz4kds deflate zstd 
+### su
+uid=0(root) gid=0(root) groups=0(root),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),1078(ext_data_rw),1079(ext_obb_rw),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid),3012(readtracefs) context=u:r:ksu:s0
+### mihomo bin
+-rwsr-sr-x 1 root net_admin u:object_r:app_data_file:s0  56688993 2026-09-10 17:28 /data/user/0/com.boxproxy.box/files/box/bin/mihomo
+0d5e82a14dc74ab9912ada7bcd87b44f  /data/user/0/com.boxproxy.box/files/box/bin/mihomo
+### startup-config
+-rw------- 1 root root 37682 2026-10-03 16:24 /data/user/0/com.boxproxy.box/files/box/run/state/startup-config
+0a82d3f0674a61c99bd7057d03dfc5ef  /data/user/0/com.boxproxy.box/files/box/run/state/startup-config
+### boxctl status
+状态: 核心 mihomo, 模式 ebpf, TUN , tproxy 9898, redir 9797, DNS tproxy:1053, 性能模式 禁用
+核心配置读取: 已读取 mihomo 配置, 配置 /data/user/0/com.boxproxy.box/files/box/run/state/startup-config, TPROXY 9898(核心配置), REDIRECT 9797(核心配置), DNS 端口 1053(核心配置), TUN -(不适用), Fake-IP IPv4 198.18.0.1/15(核心配置), Fake-IP IPv6 fdfe:dcba:9876::1/64(核心配置)
+服务状态: 核心 mihomo, PID 文件 /data/user/0/com.boxproxy.box/files/box/run/box.pid
+mihomo 未运行
+### pidof mihomo
+stopped
+### dmesg warn
+0
+### iptables owner match?
+owner-check-rc=1
+owner-insert-rc=1
+### iptables nat 53/1053
+### ss 53/1053/9090
+LISTEN      0      5      127.0.0.1:53                 0.0.0.0:*                   users:(("dnsmasq",pid=13123,fd=13))
+LISTEN      0      5      172.31.172.56:53                 0.0.0.0:*                   users:(("dnsmasq",pid=13123,fd=11))
+LISTEN      0      5        [::1]:53                    [::]:*                   users:(("dnsmasq",pid=13123,fd=6))
+LISTEN      0      5      [fe80::2826:cfff:fe40:abec]%rndis0:53                    [::]:*                   users:(("dnsmasq",pid=13123,fd=4))
+LISTEN      0      5         [240a:42ea:800:1b4a::e4]:53                    [::]:*                   users:(("dnsmasq",pid=13123,fd=15))
+### rndis
+32: rndis0    inet 172.31.172.56/24 brd 172.31.172.255 scope global rndis0\       valid_lft forever preferred_lft forever
+### kdgctl present
+-rwxr-xr-x 1 root root 2140520 2026-10-05 09:12 /data/local/tmp/chrneg
+-rw-rw-rw- 1 root root    1598 2026-10-03 18:30 /data/local/tmp/kdg_root.pem
+-rwxr-xr-x 1 root root   67584 2026-10-05 07:46 /data/local/tmp/kdgctl
+-rwxrwxrwx 1 root root 2164256 2026-10-05 04:49 /data/local/tmp/netprobe
+WROTE /data/local/tmp/kdg-final/preflight.txt
+
+WINDOW_DONE  log=/tmp/kdg-final/host.log
+
+======== cleanup / 还原 ========
+########## 1. 停核心 ##########
+服务停止: 核心 mihomo, PID 文件 /data/user/0/com.boxproxy.box/files/box/run/box.pid
+服务未运行: mihomo
+pid=none
+########## 2. 字符设备失败路径（必须在 rmmod 之前）##########
+模块已不在，跳过 chrneg
+########## 3. 交还所有权 ##########
+失败：Generic Netlink 族 "KDNSGUARD" 不存在（模块未加载？）
+########## 4. 原二进制 ##########
+bin md5=0d5e82a14dc74ab9912ada7bcd87b44f  orig=0d5e82a14dc74ab9912ada7bcd87b44f
+########## 5. 原配置 ##########
+cfg md5=0a82d3f0674a61c99bd7057d03dfc5ef  orig=0a82d3f0674a61c99bd7057d03dfc5ef
+130:  enhanced-mode: fake-ip
+1354:  dns-mode: hijack
+########## 6. 卸模块 ##########
+rmmod: failed to unload kdnsguard: No such file or directory
+模块未加载
+kdg_pool 线程=0
+########## 7. 终态 ##########
+modules=670
+warn=0
+private_dns=off
+ddl=1
+zram=lzo lzo-rle [lz4] lz4kd lz4kds deflate zstd 
+su=uid=0(root) gid=0(root) groups=0(root),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),1078(ext_data_rw),1079(ext_obb_rw),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid),3012(readtracefs) context=u:r:ksu:s0
+状态: 核心 mihomo, 模式 ebpf, TUN , tproxy 9898, redir 9797, DNS tproxy:1053, 性能模式 禁用
+核心配置读取: 已读取 mihomo 配置, 配置 /data/user/0/com.boxproxy.box/files/box/run/state/startup-config, TPROXY 9898(核心配置), REDIRECT 9797(核心配置), DNS 端口 1053(核心配置), TUN -(不适用), Fake-IP IPv4 198.18.0.1/15(核心配置), Fake-IP IPv6 fdfe:dcba:9876::1/64(核心配置)
+服务状态: 核心 mihomo, PID 文件 /data/user/0/com.boxproxy.box/files/box/run/box.pid
+mihomo 未运行
+RESTORE_OK

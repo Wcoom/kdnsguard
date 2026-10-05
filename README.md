@@ -9,7 +9,7 @@
 
 ---
 
-## 当前状态：P0–P3 完成（P3 已真机接管验证），P4 未开始
+## 当前状态：P0–P4 完成（P4 已真机 Path A 接管验证），P5 未开始
 
 | 阶段 | 状态 |
 |---|---|
@@ -19,7 +19,7 @@
 | **P2** 解析核心：缓存 / 同名合并 / 每调用方配额 / **H2 上游（nghttp2）** | ✅ 完成并真机验证 |
 | **P2 补齐：方案 §6.3 的 H2 持久连接池** | ✅ 已实现并**真机验证**（[`docs/P2-connection-pool.md`](docs/P2-connection-pool.md)、[`docs/P6-round2.md`](docs/P6-round2.md)） |
 | **P3** 全局接管（双栈 NAT / 代理所有权交接 / 泄漏与失败策略） | ✅ **已在受控窗口内真机接管并验证**，见 [`docs/P3-takeover.md`](docs/P3-takeover.md) |
-| **P4** 核心 DNS 移交 | 🟡 进行中：内核侧 IP↔域名 关联表 + Rust 客户端库已落地并真机验证（[`docs/P4-mapping.md`](docs/P4-mapping.md)）；**代理侧适配器已实现但未真机验证**（[`docs/P4-adapters.md`](docs/P4-adapters.md)） |
+| **P4** 核心 DNS 移交 | ✅ **Path A 真机接管已验证**（[`docs/P4-final.md`](docs/P4-final.md)）：mihomo 自身解析走内核字符设备，App 53 走 eBPF `dns-mode: off` + 内核 NAT；开窗口前修掉 `Invalid()` 写反 / 字符设备 `op_enter` 泄漏 / TCP `TIME_WAIT` 占 1054。生成器持久化与 FakeIP 产品决策仍待定 |
 | **P6** 功耗定型 | 🟡 第一轮测量完成（[`docs/P6-measurements.md`](docs/P6-measurements.md)）：**能耗不可测**（无功率仪 + 手机在充电），但测出并量化了上游连接池缺失的代价；见下 |
 | **P5** 安卓平台对齐 | 🟡 **范围已缩小**（[`docs/P5-scope.md`](docs/P5-scope.md)）：澄清之后不再需要 AOSP DnsResolver/APEX 状态桥，只剩非 root 设备访问、网络事件驱动事务、常驻交付形态三类工程项；⛔ 未开始 |
 | P7 全内核 H3 | ⬜ 未开始 |

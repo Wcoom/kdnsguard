@@ -290,20 +290,30 @@ static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
 		return -EINVAL;
 	if (!kdg_op_enter())
 		return -ESHUTDOWN;
-	/* 拒绝 seek：本设备是消息流，不是可定位的文件。 */
-	if (*ppos != 0)
-		return -ESPIPE;
+	/* 拒绝 seek：本设备是消息流，不是可定位的文件。
+	 *
+	 * ⚠️ 从此处起每一条失败路径都必须 kdg_op_exit()。漏一次就会把
+	 * kdg_active_ops 留在 >0，kdg_chardev_exit() 永久等待，rmmod 卡死。
+	 * 校验失败尤其常见（ABI / 长度 / opcode），所以不能只在成功路径配对。 */
+	if (*ppos != 0) {
+		ret = -ESPIPE;
+		goto out_entered;
+	}
 
-	if (count < sizeof(req) || count > sizeof(req) + KDG_MAX_WIRE_MSG)
-		return -EMSGSIZE;
+	if (count < sizeof(req) || count > sizeof(req) + KDG_MAX_WIRE_MSG) {
+		ret = -EMSGSIZE;
+		goto out_entered;
+	}
 
 	kbuf = kmalloc(count, GFP_KERNEL);
-	if (!kbuf)
-		return -ENOMEM;
+	if (!kbuf) {
+		ret = -ENOMEM;
+		goto out_entered;
+	}
 
 	if (copy_from_user(kbuf, ubuf, count)) {
 		ret = -EFAULT;
-		goto out;
+		goto out_entered;
 	}
 
 	memcpy(&req, kbuf, sizeof(req));
@@ -313,50 +323,50 @@ static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
 		/* 明确拒绝而不是尽力解析：ABI 不同意味着字段布局可能不同，
 		 * 「尽力而为」会把错误解释成合法请求。 */
 		ret = -EPROTO;
-		goto out;
+		goto out_entered;
 	}
 	if (req.opcode != KDG_OP_QUERY && req.opcode != KDG_OP_MAP_LOOKUP) {
 		/* CANCEL / GET_HEALTH 在这条通道上未实现。明确返回「不支持」
 		 * 而不是静默成功。 */
 		ret = -EOPNOTSUPP;
-		goto out;
+		goto out_entered;
 	}
 	if (req.total_len != count) {
 		ret = -EMSGSIZE;
-		goto out;
+		goto out_entered;
 	}
 	if (req.flags & ~KDG_REQ_FLAG_MASK) {
 		ret = -EINVAL;
-		goto out;
+		goto out_entered;
 	}
 	/* 尚未实现的语义必须拒绝，不能默默改走默认网络。 */
 	if (req.flags || req.requested_network_handle) {
 		ret = -EOPNOTSUPP;
-		goto out;
+		goto out_entered;
 	}
 	if (req.reserved0 || req.deadline_ms > 60000) {
 		ret = -EINVAL;
-		goto out;
+		goto out_entered;
 	}
 	qlen = req.query_len;
 	if (sizeof(req) + qlen > count) {
 		ret = -EMSGSIZE;
-		goto out;
+		goto out_entered;
 	}
 	if (req.opcode == KDG_OP_MAP_LOOKUP) {
 		/* 反查的载荷是**裸地址**，长度即地址长度。 */
 		if (qlen != 4 && qlen != 16) {
 			ret = -EMSGSIZE;
-			goto out;
+			goto out_entered;
 		}
 	} else if (qlen == 0 || qlen > KDG_MAX_WIRE_MSG) {
 		ret = -EMSGSIZE;
-		goto out;
+		goto out_entered;
 	}
 	if (req.expected_generation &&
 	    req.expected_generation != READ_ONCE(kdg_cfg.generation)) {
 		ret = -ESTALE;
-		goto out;
+		goto out_entered;
 	}
 
 	/* 方案 §14.2：「内核根据调用者凭据与系统授予的网络权限决定可用 network，
@@ -364,28 +374,23 @@ static ssize_t kdg_chr_write(struct file *filp, const char __user *ubuf,
 	 * 一律走 init_net；凭据裁决随 P3 的 SET_NETWORK 一起落地。 */
 
 	ret = mutex_lock_interruptible(&ctx->lock);
-	if (ret) {
-		kdg_op_exit();
-		goto out_no_lock;
-	}
+	if (ret)
+		goto out_entered;
 
 	/* 未读取的结果属于原 cookie，不能被下一次提交覆盖。 */
 	if (ctx->have_resp) {
 		ret = -EAGAIN;
-		goto unlock;
+		mutex_unlock(&ctx->lock);
+		goto out_entered;
 	}
 
 	ret = (req.opcode == KDG_OP_MAP_LOOKUP)
 		? kdg_do_map_lookup(ctx, &req, kbuf + sizeof(req), qlen)
 		: kdg_do_query(ctx, &req, kbuf + sizeof(req), qlen);
-
-unlock:
 	mutex_unlock(&ctx->lock);
 
-	out:
-	mutex_unlock(&ctx->lock);
+out_entered:
 	kdg_op_exit();
-out_no_lock:
 	kfree(kbuf);
 	return ret;
 }
@@ -403,8 +408,10 @@ static ssize_t kdg_chr_read(struct file *filp, char __user *ubuf,
 		return -EINVAL;
 	if (!kdg_op_enter())
 		return -ESHUTDOWN;
-	if (*ppos != 0)
+	if (*ppos != 0) {
+		kdg_op_exit();
 		return -ESPIPE;
+	}
 
 	ret = mutex_lock_interruptible(&ctx->lock);
 	if (ret) {

@@ -1,0 +1,4 @@
+uid=0 mode=udp target=8.8.8.8:53
+peer=8.8.8.8:53
+local=10.1.167.118:49077
+bytes=55 match=0 rcode=0 answers=1 elapsed_ms=0

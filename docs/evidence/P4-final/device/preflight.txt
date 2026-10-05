@@ -1,0 +1,51 @@
+### time Mon Oct  5 09:20:29 CST 2026 uptime=12892.90
+### uname
+Linux localhost 6.6.118-android15-8-gf4dc45704e54-abogki20260727-4k #16 SMP PREEMPT Mon May 12 09:09:59 UTC 2025 aarch64 Toybox
+### kernel build
+Linux version 6.6.118-android15-8-gf4dc45704e54-abogki20260727-4k (wcoom@wcoom) (ZyC clang version 19.0.0git (https://github.com/llvm/llvm-project b5f23e56902ec37c6ac1c13f21ba5d863d66b3de), LLD 19.0.0 (https://github.com/llvm/llvm-project b5f23e56902ec37c6ac1c13f21ba5d863d66b3de)) #16 SMP PREEMPT Mon May 12 09:09:59 UTC 2025
+### private_dns
+off
+a596382545.6.00p.net
+### modules
+670
+kdnsguard 未加载
+### /dev/kdnsguard
+crw-rw---- 1 root root 440,   0 2026-10-05 09:19 /dev/kdnsguard
+### ddl
+1
+### zram
+lzo lzo-rle [lz4] lz4kd lz4kds deflate zstd 
+### su
+uid=0(root) gid=0(root) groups=0(root),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),1078(ext_data_rw),1079(ext_obb_rw),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid),3012(readtracefs) context=u:r:ksu:s0
+### mihomo bin
+-rwsr-sr-x 1 root net_admin u:object_r:app_data_file:s0  56688993 2026-09-10 17:28 /data/user/0/com.boxproxy.box/files/box/bin/mihomo
+0d5e82a14dc74ab9912ada7bcd87b44f  /data/user/0/com.boxproxy.box/files/box/bin/mihomo
+### startup-config
+-rw------- 1 root root 37682 2026-10-03 16:24 /data/user/0/com.boxproxy.box/files/box/run/state/startup-config
+0a82d3f0674a61c99bd7057d03dfc5ef  /data/user/0/com.boxproxy.box/files/box/run/state/startup-config
+### boxctl status
+状态: 核心 mihomo, 模式 ebpf, TUN , tproxy 9898, redir 9797, DNS tproxy:1053, 性能模式 禁用
+核心配置读取: 已读取 mihomo 配置, 配置 /data/user/0/com.boxproxy.box/files/box/run/state/startup-config, TPROXY 9898(核心配置), REDIRECT 9797(核心配置), DNS 端口 1053(核心配置), TUN -(不适用), Fake-IP IPv4 198.18.0.1/15(核心配置), Fake-IP IPv6 fdfe:dcba:9876::1/64(核心配置)
+服务状态: 核心 mihomo, PID 文件 /data/user/0/com.boxproxy.box/files/box/run/box.pid
+mihomo 未运行
+### pidof mihomo
+stopped
+### dmesg warn
+0
+### iptables owner match?
+owner-check-rc=1
+owner-insert-rc=1
+### iptables nat 53/1053
+### ss 53/1053/9090
+LISTEN      0      5      127.0.0.1:53                 0.0.0.0:*                   users:(("dnsmasq",pid=13123,fd=13))
+LISTEN      0      5      172.31.172.56:53                 0.0.0.0:*                   users:(("dnsmasq",pid=13123,fd=11))
+LISTEN      0      5        [::1]:53                    [::]:*                   users:(("dnsmasq",pid=13123,fd=6))
+LISTEN      0      5      [fe80::2826:cfff:fe40:abec]%rndis0:53                    [::]:*                   users:(("dnsmasq",pid=13123,fd=4))
+LISTEN      0      5         [240a:42ea:800:1b4a::e4]:53                    [::]:*                   users:(("dnsmasq",pid=13123,fd=15))
+### rndis
+32: rndis0    inet 172.31.172.56/24 brd 172.31.172.255 scope global rndis0\       valid_lft forever preferred_lft forever
+### kdgctl present
+-rwxr-xr-x 1 root root 2140520 2026-10-05 09:12 /data/local/tmp/chrneg
+-rw-rw-rw- 1 root root    1598 2026-10-03 18:30 /data/local/tmp/kdg_root.pem
+-rwxr-xr-x 1 root root   67584 2026-10-05 07:46 /data/local/tmp/kdgctl
+-rwxrwxrwx 1 root root 2164256 2026-10-05 04:49 /data/local/tmp/netprobe

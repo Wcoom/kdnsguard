@@ -1,0 +1,1 @@
+ipv4     2 udp      17 26 src=10.1.167.118 dst=8.8.8.8 sport=49077 dport=53 src=127.0.0.1 dst=10.1.167.118 sport=1054 dport=49077 mark=0 secctx=u:object_r:unlabeled:s0 use=2

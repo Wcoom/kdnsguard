@@ -6,8 +6,11 @@
 本文件说明**代理侧**怎么接内核 DNS，以及哪些部分被卡住了。
 内核侧的映射表见 [`P4-mapping.md`](P4-mapping.md)。
 
-> ⚠️ **本轮只做代码，没有真机验证。** 与内核侧不同，适配器要验证的是「日常
-> 使用中 DNS 全走内核」时的行为，需要手机进入较长接管态 —— 按约定另开窗口。
+> ⚠️ **代码说明以本文为准；完整 Path A 真机窗口见 [`P4-final.md`](P4-final.md)。**
+> 开窗口前修掉了 `KernelResolver.Invalid()` 写反（方案 §12.1 点名警告过）、
+> SystemResolver 覆盖、`PatchFrom` 类型断言、以及 `backend: kernel` 时强制
+> 用户态 nameserver 四件事。没有那些修复，「移交」只覆盖 eBPF hijack 和
+> `ExchangeContext` 直调，节点/订阅域名会掉进明文 UDP。
 
 ---
 
@@ -295,10 +298,13 @@ P5 剩下的因此是工程项（非 root 访问 `/dev/kdnsguard` 的 ueventd �
 
 ## 10. 仍然未覆盖
 
-1. **eBPF 放行路径（§5 的 A 路径）** 仍卡在 BoxProxy 源码不可得；本轮走的是
-   B 路径（delegate）。两条路径下「解析全在内核」相同，差别只在谁转发报文。
-2. **长时间浸泡**：本轮每阶段都是分钟级窗口，没有跑"日常使用一整天"。
-3. **FakeIP**：本轮把 `enhanced-mode` 临时改为 `redir-host`；长期是否放弃
+1. **eBPF 放行路径的生成器持久化**仍卡在 BoxProxy 源码不可得。受控窗口已经
+   直接改 `startup-config` 的 `dns-mode: off` 跑通 Path A（见
+   [`P4-final.md`](P4-final.md)）；BoxProxy 从 DB 再生配置时会写回 `hijack`。
+2. **长时间浸泡**：窗口仍是分钟级，没有跑「日常使用一整天」。
+3. **FakeIP**：窗口把 `enhanced-mode` 临时改为 `redir-host`；长期是否放弃
    fake-ip 需要产品决策（方案 §12.2 的立场是首期返回真实 IP）。
 4. **映射命中率的调参**：`map_misses` 占比高是正常的（见 §6 的观测），但
    「多少算好」需要真实使用数据来定。
+5. TUN / `type: dns` / REST DoH 在内核后端下仍走 `RelayDnsPacket`（查询落在
+   内核，多一次 unpack/pack）。

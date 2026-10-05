@@ -210,6 +210,7 @@ static int __init kdg_init(void)
 	if (ret) {
 		pr_err("同名合并表初始化失败: %d\n", ret);
 		kdg_quota_exit();
+		kdg_map_exit();
 		kdg_cache_tab_exit();
 		kdg_genl_exit();
 		kdg_tls_global_exit();
@@ -224,6 +225,7 @@ static int __init kdg_init(void)
 		pr_err("上游连接池初始化失败: %d\n", ret);
 		kdg_sflight_exit();
 		kdg_quota_exit();
+		kdg_map_exit();
 		kdg_cache_tab_exit();
 		kdg_genl_exit();
 		kdg_tls_global_exit();
@@ -235,6 +237,8 @@ static int __init kdg_init(void)
 		pr_err("字符设备注册失败: %d\n", ret);
 		kdg_pool_shutdown();
 		kdg_sflight_exit();
+		kdg_quota_exit();
+		kdg_map_exit();
 		kdg_cache_tab_exit();
 		kdg_genl_exit();
 		kdg_tls_global_exit();
@@ -248,6 +252,7 @@ static int __init kdg_init(void)
 		kdg_pool_shutdown();
 		kdg_sflight_exit();
 		kdg_quota_exit();
+		kdg_map_exit();
 		kdg_cache_tab_exit();
 		kdg_genl_exit();
 		kdg_tls_global_exit();

@@ -1,0 +1,4 @@
+uid=0 mode=tcp target=2001:4860:4860::8888:53
+peer=[2001:4860:4860::8888]:53
+local=[240a:42ea:800:1b4a:104f:42ff:feeb:485e]:41866
+bytes=72 match=0 rcode=0 answers=2 elapsed_ms=0

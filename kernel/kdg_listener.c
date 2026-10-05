@@ -123,6 +123,16 @@ static int kdg_listener_bind(struct socket **out, int family, bool stream,
 	ret = sock_create_kern(&init_net, family, type, proto, &sock);
 	if (ret)
 		return ret;
+	/*
+	 * TCP 查询走完后，已 accept 的套接字在 127.0.0.1:listen_port
+	 * 上进入 TIME_WAIT（约 60 s）。没有 SO_REUSEADDR 时，DISABLE
+	 * 之后立刻 PREPARE 会在 kernel_bind 上得到 -EADDRINUSE ——
+	 * 热重载切回内核后端、以及「kill 核心再 boxctl restart」都会
+	 * 撞上。UDP 不受影响；客户端入口绑的是接口地址，与 loopback
+	 * 不抢同一元组，但也一并打开，避免接口地址上同样的 TCP
+	 * TIME_WAIT 挡住重建。
+	 */
+	sock_set_reuseaddr(sock->sk);
 
 	memset(&ss, 0, sizeof(ss));
 	if (family == AF_INET) {

@@ -1,0 +1,5 @@
+  attr 41 map_entries len=4  30 (0x0000001e)
+  attr 11 doh_queries len=8  44
+  attr 12 doh_ok len=8  44
+  attr 47 pool_connects len=8  1
+  attr 48 pool_reused len=8  43

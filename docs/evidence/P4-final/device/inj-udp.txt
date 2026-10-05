@@ -1,0 +1,4 @@
+uid=0 mode=udp target=223.5.5.5:53
+peer=223.5.5.5:53
+local=10.1.167.118:33738
+bytes=112 match=0 rcode=3 answers=0 elapsed_ms=94
