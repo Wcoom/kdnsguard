@@ -40,7 +40,7 @@ extern bool kdg_allow_intercept;
  * kdg_genl_family 构造回包，形成相互引用，前置声明是标准解法。 */
 static int kdg_genl_caps(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info);
-static int kdg_genl_set_intercept(bool enable);
+int kdg_genl_set_intercept(bool enable);
 static int kdg_genl_enable(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_disable(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_set_trust(struct sk_buff *skb, struct genl_info *info);
@@ -417,7 +417,7 @@ nla_failure:
 	return -EMSGSIZE;
 }
 
-static int kdg_genl_set_intercept(bool enable)
+int kdg_genl_set_intercept(bool enable)
 {
 	if (!enable) {
 		WRITE_ONCE(kdg_cfg.intercept_enabled, false);
@@ -509,10 +509,12 @@ static int kdg_genl_set_trust(struct sk_buff *skb, struct genl_info *info)
 	return genlmsg_reply(msg, info);
 }
 
-static int kdg_genl_prepare(struct sk_buff *skb, struct genl_info *info)
+/*
+ * PREPARE 的实现体，与 netlink 无关，故内核自启（kdg_autostart_work）与
+ * 用户空间的 SET 命令走同一条路径 —— 两条路各写一遍必然分叉。
+ */
+int kdg_genl_prepare_tx(u64 tx)
 {
-	u64 tx = info->attrs[KDG_A_TRANSACTION_ID] ?
-		nla_get_u64(info->attrs[KDG_A_TRANSACTION_ID]) : 0;
 	int ret;
 
 	if (!tx)
@@ -530,6 +532,14 @@ static int kdg_genl_prepare(struct sk_buff *skb, struct genl_info *info)
 	WRITE_ONCE(kdg_cfg.ownership, KDG_OWN_PREPARED);
 	WRITE_ONCE(kdg_cfg.generation, READ_ONCE(kdg_cfg.generation) + 1);
 	return 0;
+}
+
+static int kdg_genl_prepare(struct sk_buff *skb, struct genl_info *info)
+{
+	u64 tx = info->attrs[KDG_A_TRANSACTION_ID] ?
+		nla_get_u64(info->attrs[KDG_A_TRANSACTION_ID]) : 0;
+
+	return kdg_genl_prepare_tx(tx);
 }
 
 static int kdg_genl_commit(struct sk_buff *skb, struct genl_info *info)

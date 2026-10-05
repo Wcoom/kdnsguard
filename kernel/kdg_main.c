@@ -7,7 +7,21 @@
  * 所以将来若 kdnsguard 要常驻设备，必须改为内建集成 —— 那是 P3 的决策，
  * 骨架阶段用 LKM 换取快速迭代与故障隔离。
  */
+#include <linux/ktime.h>
+
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
+
+/*
+ * 内建形态（CONFIG_KDNSGUARD=y）下参数默认会落到
+ * /sys/module/kernel/parameters/，而且会与内核自带的同名参数撞车
+ * （`debug`、`h3` 这类通用名尤其危险）。显式钉死前缀后，内建与模块两种
+ * 形态的参数路径一致：/sys/module/kdnsguard/parameters/。
+ * 内核里的标准做法见 drivers/misc/ddl_guard.c 的同一处。
+ */
+#ifdef MODULE_PARAM_PREFIX
+#undef MODULE_PARAM_PREFIX
+#endif
+#define MODULE_PARAM_PREFIX "kdnsguard."
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -17,6 +31,7 @@
 #include <net/netns/generic.h>
 
 #include "kdg.h"
+#include "kdg_tls.h"
 
 /* ── 全局配置快照 ─────────────────────────────────────────────────────── */
 /* 读写纪律：写路径只有两处 —— 模块 init（一次性）与 genl 的启停命令。
@@ -38,7 +53,13 @@ struct kdg_config_snapshot kdg_cfg = {
 
 /* ── 模块参数（开发期配置面；正式配置面是 genl 事务接口） ─────────────── */
 bool kdg_allow_intercept;
-module_param_named(allow_intercept, kdg_allow_intercept, bool, 0444);
+/*
+ * 0444 → 0644：模块形态由 insmod allow_intercept=1 传入，而**内建形态没有
+ * insmod**，只能由开机脚本写 /sys/module/kdnsguard/parameters/allow_intercept。
+ * 放开写权限不改变安全边界：真正的开关是 genl 的所有权事务，而这个参数只是
+ * 「本模块是否被允许进入接管业务」的前置闸门；能写它的进程已经需要 root。
+ */
+module_param_named(allow_intercept, kdg_allow_intercept, bool, 0644);
 MODULE_PARM_DESC(allow_intercept,
 	"允许通过 Generic Netlink 启用 53 端口接管。默认 0 —— 骨架阶段还没有本地 DNS 监听者，启用会把手机 DNS 打断。仅用于开发验证。");
 
@@ -131,6 +152,10 @@ static struct pernet_operations kdg_net_ops = {
 };
 
 /* ── 生命周期 ─────────────────────────────────────────────────────────── */
+
+/* 自启的实现见文件末尾（它要用 genl 的 PREPARE/接管入口）。 */
+int kdg_autostart_init(void);
+void kdg_autostart_stop(void);
 
 static int __init kdg_init(void)
 {
@@ -276,6 +301,8 @@ static int __init kdg_init(void)
 		return ret;
 	}
 
+	kdg_autostart_init();
+
 	pr_info("已加载：ABI v%d，监听端口 %u，接管 %s（capability=0x%08x）\n",
 		KDG_ABI_VERSION, READ_ONCE(kdg_cfg.listen_port),
 		READ_ONCE(kdg_cfg.intercept_enabled) ? "已启用" : "未启用",
@@ -285,6 +312,9 @@ static int __init kdg_init(void)
 
 static void __exit kdg_exit(void)
 {
+	/* 先停自启工作，否则它可能在拆卸过程中重新排程/调用已停掉的东西。 */
+	kdg_autostart_stop();
+
 	/* 先撤销 ownership、停止 listener，再撤销管理面和其他资源。 */
 	if (READ_ONCE(kdg_cfg.intercept_enabled)) {
 		WRITE_ONCE(kdg_cfg.intercept_enabled, false);
@@ -311,6 +341,114 @@ static void __exit kdg_exit(void)
 	kdg_tls_global_exit();
 
 	pr_info("已卸载\n");
+}
+
+
+/* ── 内建形态的开机自启：不依赖任何用户空间脚本 ─────────────────────
+ *
+ * 目标：设备开机后，内核态 DNS 自己进入接管态 —— 不需要 insmod（已内建）、
+ * 不需要脚本喂信任锚、不需要任何人做 PREPARE/COMMIT。
+ *
+ * 三件事都必须由内核自己做：
+ *   ① 信任锚：编进镜像（kdg_root_ca.h，由 tools/gen-root-ca.py 生成）。
+ *      它本来就是公开的根证书，且**钉死**正是目的：内核只认这一个上游身份。
+ *   ② 时机：网络就绪之前 PREPARE 必然失败（它要探测上游）。所以用延迟工作
+ *      反复重试，而不是在 initcall 里一次性尝试 —— 这也是原来那个开机脚本
+ *      存在的全部理由。
+ *   ③ 不抢所有权：ownership 不是 NONE 就说明已有人（mihomo 或管理脚本）持有，
+ *      本工作只跳过这一次；对方释放后下一拍自然接管。因此它与既有的
+ *      脚本/代理路径**可以共存**，不会互相打架。
+ */
+#ifdef CONFIG_KDNSGUARD_EMBED_CA
+#include "kdg_root_ca.h"
+#endif
+
+/* 默认值随 Kconfig：内建时开机自启，树外模块形态默认关（开发时由 insmod
+ * 的 allow_intercept 显式控制）。 */
+#if defined(CONFIG_KDNSGUARD_AUTO_START)
+static bool kdg_auto_start = true;
+#else
+static bool kdg_auto_start;
+#endif
+module_param_named(auto_start, kdg_auto_start, bool, 0644);
+MODULE_PARM_DESC(auto_start, "开机后由内核自己完成 PREPARE/COMMIT（内建形态默认开）");
+
+#define KDG_AUTOSTART_FIRST_MS	20000	/* 首次尝试：等网络起来的起步时间 */
+#define KDG_AUTOSTART_FAST_MS	15000	/* 前几次的间隔 */
+#define KDG_AUTOSTART_SLOW_MS	60000	/* 连续失败后的间隔（不再打扰） */
+#define KDG_AUTOSTART_FAST_N	8	/* 快速重试次数 */
+
+static struct delayed_work kdg_autostart_dw;
+static unsigned int kdg_autostart_tries;
+static bool kdg_autostart_done;
+
+static void kdg_autostart_work(struct work_struct *work)
+{
+	unsigned int next_ms;
+	int ret;
+
+	if (!READ_ONCE(kdg_auto_start) || !READ_ONCE(kdg_allow_intercept))
+		return;			/* 被显式关掉：不再重试，也不再自排 */
+
+	if (READ_ONCE(kdg_cfg.ownership) != KDG_OWN_NONE) {
+		/* 有主：不抢。对方释放之后下一拍我们自然接管。 */
+		next_ms = KDG_AUTOSTART_SLOW_MS;
+		goto again;
+	}
+
+	/* 走到这里 ownership 必为 NONE，故不必先 DISABLE。事务号用单调毫秒，
+	 * 只要每次尝试都不同即可（COMMIT 必须回填同一个值）。 */
+	ret = kdg_genl_prepare_tx(div_u64(ktime_get_ns(), 1000000ULL));
+	if (!ret)
+		ret = kdg_genl_set_intercept(true);
+	if (ret) {
+		/* 上游还没通（网络未就绪）是最常见的原因，不值得每次都刷日志。 */
+		kdg_autostart_tries++;
+		if (kdg_autostart_tries == 1 || kdg_autostart_tries % 10 == 0)
+			pr_info("自启：第 %u 次尝试未成功（%d），继续重试\n",
+				kdg_autostart_tries, ret);
+		next_ms = kdg_autostart_tries < KDG_AUTOSTART_FAST_N ?
+			  KDG_AUTOSTART_FAST_MS : KDG_AUTOSTART_SLOW_MS;
+		goto again;
+	}
+
+	kdg_autostart_done = true;
+	pr_info("自启：内核态 DNS 已接管 53（无用户空间参与，第 %u 次尝试）\n",
+		kdg_autostart_tries + 1);
+	return;
+
+again:
+	schedule_delayed_work(&kdg_autostart_dw, msecs_to_jiffies(next_ms));
+}
+
+int kdg_autostart_init(void)
+{
+	INIT_DELAYED_WORK(&kdg_autostart_dw, kdg_autostart_work);
+
+#ifdef CONFIG_KDNSGUARD_EMBED_CA
+	{
+		int added = kdg_tls_add_ca(kdg_root_ca, KDG_ROOT_CA_LEN);
+
+		if (added < 0)
+			pr_err("内建信任锚加载失败: %d（将无法自启，仍可由用户空间喂入）\n",
+			       added);
+		else
+			pr_info("内建信任锚已加载（%d 张）\n", added);
+	}
+#endif
+
+	if (!READ_ONCE(kdg_auto_start))
+		return 0;
+	pr_info("自启已排程：%d ms 后首次尝试，网络就绪前会反复重试\n",
+		KDG_AUTOSTART_FIRST_MS);
+	schedule_delayed_work(&kdg_autostart_dw,
+			      msecs_to_jiffies(KDG_AUTOSTART_FIRST_MS));
+	return 0;
+}
+
+void kdg_autostart_stop(void)
+{
+	cancel_delayed_work_sync(&kdg_autostart_dw);
 }
 
 module_init(kdg_init);

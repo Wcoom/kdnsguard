@@ -133,6 +133,11 @@ int kdg_nat_register(struct net *net);
 void kdg_nat_unregister(struct net *net);
 u32 kdg_nat_capability_bits(void);
 
+/* kdg_genl.c：PREPARE 的实现体（内核自启与 netlink 命令共用） */
+int kdg_genl_prepare_tx(u64 tx);
+/* 接管开关的实现体（同上） */
+int kdg_genl_set_intercept(bool enable);
+
 /* kdg_edns.c */
 int kdg_edns_init(void);
 int kdg_edns_register(struct net *net);
