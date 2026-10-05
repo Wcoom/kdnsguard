@@ -91,3 +91,18 @@ BoxProxy 从 DB 重生配置（打开 App、保存、`boxctl boot`）后，最�
 | App 明文 53 走内核 | ✅ eBPF `dns-mode: off` + NAT |
 | 上游 H3 | ⛔ 方案门槛未过，停在 H2 |
 | 任意 App 加密 DNS | ⛔ 方案 §1.1 不可实现边界 |
+
+---
+
+## 6. 重启验证（2026-10-05 12:07，用户手动重启）
+
+| 项 | 实测 |
+|---|---|
+| 开机脚本 | `12:07:48 insmod rc=0` → `mknod major=440` → `12:08:09 已应用 need_yaml=1`（BoxProxy 开机重生了配置，被补回）→ 自检循环 pid 18347，父进程是 service.d 子 shell |
+| mihomo | `12:08:09 kernel DNS backend active`，核心 md5 `dae11afe…`（无需再换） |
+| health | `ownership=2`、`listener_ready=1`、`client_ifaces=1`、`doh_ok=113/113`、`pool_connects=1`、`map_entries=167` |
+| App 明文 53 | UDP 223.5.5.5 / TCP 8.8.8.8 由内核应答，peer 为真实 DNS IP |
+| 热点 | 笔记本 `dig @172.31.172.56 example.com` 返回两条 A |
+| 配置被冲掉 | 用原配置覆盖 `startup-config`，**8 秒后**自检循环补回 `backend: kernel` + `dns-mode: off` 并重启核心，查询正常 |
+| 私人 DNS | `off` |
+| 告警 | 17 条，全部是既有 vendor 基线（context_tracking / proc_register / spmi / bdev / sysfs / irq_set_irq_wake / slub），**kdnsguard 相关 0 条** |
