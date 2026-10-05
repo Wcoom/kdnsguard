@@ -327,10 +327,36 @@ adb shell su -c 'rmmod kdnsguard'
 
 ---
 
+## 安装（设备常驻）
+
+发布物是 **KernelSU/Magisk 模块**：`kdnsguard-ksu-<版本>.zip`（见 Releases）。
+
+```
+ksud module install kdnsguard-ksu-0.2.0.zip      # 或 KernelSU 应用里「安装模块」
+```
+
+开机时模块脚本只做两件内核做不了的事（`insmod`、`mknod`），其余全部在模块内部：
+信任锚编在 `.ko` 里、所有权的 `PREPARE → COMMIT` 由内核自己的延迟工作带重试完成
+（网络就绪前反复尝试，ownership 被他人持有时让位、对方释放后接管）。因此
+**开机不需要任何部署脚本，也不需要代理进程活着**。
+
+模块带引导保护：`post-fs-data` 落 `.boot` 标记、`service.sh` 开机后清除；下次开机若
+仍看到标记即自我停用，绝不进入开机循环（删除模块目录下的 `disable` 可恢复）。
+
+诊断：模块目录内附带 `kdgctl`（`health` / `query <域名>` / `bpftest <秒>`）。
+
+构建模块包：`bash tools/build-ksu-module.sh` → `dist/kdnsguard-ksu-<版本>.zip`。
+
+---
+
 ## 与工作区的关系
 
-本仓库是独立 git 仓库。内核源码在
-`/home/wcoom/桌面/oplus13/android_kernel_common_oneplus_sm8750`，
+本仓库是独立 git 仓库（`github.com/Wcoom/kdnsguard`，默认分支 `main`）。
+内核源码在 `/home/wcoom/桌面/oplus13/android_kernel_common_oneplus_sm8750`，
 模块以**树外**方式（`M=...`）针对其 `out/` 构建，避免 ddl_guard 那种
 「源码在内核树、符号链接进模块目录」的双份布局隐患。
-将来若需常驻设备（AnyKernel3 只换内核段、不装模块），再改为内建集成。
+
+⚠️ **曾经尝试过把本工程编进内核（`CONFIG_KDNSGUARD=y`），该路线已放弃并整体回滚**：
+内建镜像在真机上引导失败（第一屏无限重启、内核完全没有日志），而同一套刷机流程与
+镜像结构在之前的多次刷机中都成立。四个内建提交留在内核仓库历史里备查，树本身已
+还原为内建之前的状态。现形态是 KO，由 KernelSU 模块在开机时加载。
