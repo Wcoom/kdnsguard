@@ -134,6 +134,19 @@ static int kdg_listener_bind(struct socket **out, int family, bool stream,
 	 */
 	sock_set_reuseaddr(sock->sk);
 
+	/*
+	 * 接收缓冲显式放大。
+	 *
+	 * 为什么必须：本监听器是**单线程**「收一个 → 解析 → 回一个」，解析未命中
+	 * 缓存时要等一次上游往返（H3/H2 RTT 几十到几百毫秒）。这期间到达的查询
+	 * 只能排在 socket 接收队列里，队列一满内核就**静默丢包**，客户端只看到
+	 * 超时/重试。真机实测（2026-10-05）：客户端入口 socket 的 drops 计数在
+	 * 一轮突发查询后涨到 444，同一域名第二次查就好 —— 典型的队列溢出。
+	 * 默认 sk_rcvbuf 只有几十 KB（约数十个 DNS 报文），这里抬到 1 MiB，
+	 * 让突发在解析线程忙时也能排住。
+	 */
+	sock->sk->sk_rcvbuf = 1024 * 1024;
+
 	memset(&ss, 0, sizeof(ss));
 	if (family == AF_INET) {
 		struct sockaddr_in *s = (struct sockaddr_in *)&ss;
@@ -956,6 +969,7 @@ static int kdg_listener_probe_upstream(void)
 	struct kdg_doh_cfg cfg;
 	u8 *reply;
 	size_t reply_len = KDG_DOH_RX_MAX;
+	unsigned int i;
 	int ret;
 
 	if (!kdg_tls_ca_count())
@@ -964,10 +978,27 @@ static int kdg_listener_probe_upstream(void)
 	if (!reply)
 		return -ENOMEM;
 	kdg_doh_default_cfg(&cfg);
-	ret = kdg_doh_query(&cfg, query, sizeof(query), reply, &reply_len);
-	if (!ret)
-		ret = kdg_wire_match_response(query, sizeof(query), reply,
-					      reply_len, &(struct kdg_summary){ 0 });
+
+	/*
+	 * 有界重试。为什么需要：模块刚加载或上游连接还没建好时，第一次探测
+	 * 必然失败（池线程要先把 H3/H2 连上），而 PREPARE 是**接管的第一步** ——
+	 * 一次瞬时失败就让「开机自动接管」失败，只能等下一轮。真机实测：
+	 * 刚加载后第一次 PREPARE 报 -EIO，两秒后重试即成功。
+	 * 三次、每次间隔 300 ms，总代价 ≤ 1 s，仍远小于开机的容忍窗口。
+	 */
+	for (i = 0; i < 3; i++) {
+		reply_len = KDG_DOH_RX_MAX;
+		ret = kdg_doh_query(&cfg, query, sizeof(query), reply,
+				    &reply_len);
+		if (!ret)
+			ret = kdg_wire_match_response(query, sizeof(query),
+						      reply, reply_len,
+						      &(struct kdg_summary){ 0 });
+		if (!ret)
+			break;
+		if (i + 1 < 3)
+			msleep(300);
+	}
 	kfree(reply);
 	return ret;
 }

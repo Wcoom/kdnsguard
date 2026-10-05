@@ -103,6 +103,13 @@ struct kdg_pool {
 	/* 上游身份变了的待办。**只由驱动线程执行**：拆连接这件事只有它有权做，
 	 * 因为只有它知道此刻没有一次读正拿着那个对象（见 check_identity 的注释）。 */
 	bool			rebuild;
+	/* 连续超时计数。为什么需要：连接**看起来**还活着、实际已经黑洞化时
+	 * （最典型是移动网络封了 UDP/443：QUIC 连接不会收到任何错误，也就
+	 * 永远不会判死），池层会一直往一条死连接上发请求，每条都等到超时。
+	 * 真机实测：手机上换到只允许 TCP 的网络后，DNS 就这样全超时，而
+	 * 上游"已连接"（H3）状态一直挂着、从不重建、也就没有机会回落到 H2。
+	 * 判据取「连续两次超时」：一次慢查询不该把连接推倒重来。 */
+	u32			consec_timeouts;
 	/* 对端声明的并发流上限的**缓存**。驱动线程负责刷新，其他线程只读 ——
 	 * nghttp2 的会话不是线程安全的，从别的线程去读它的 remote_settings
 	 * 就是并发访问协议栈内部状态。 */
@@ -221,6 +228,8 @@ static void kdg_pool_settle_locked(void)
 		if (!r->st.done && !r->st.err)
 			continue;
 
+		if (!r->st.err)
+			g_pool.consec_timeouts = 0;	/* 有成功就清零 */
 		if (r->st.err) {
 			kdg_pool_to_done_locked(r, r->st.err);
 		} else if (!r->st.status_seen) {
@@ -290,6 +299,7 @@ static void kdg_pool_sweep_locked(void)
 
 		if (r->state == KDG_SLOT_QUEUED) {
 			kdg_pool_to_done_locked(r, -ETIMEDOUT);
+			g_pool.consec_timeouts++;
 			continue;
 		}
 
@@ -303,6 +313,19 @@ static void kdg_pool_sweep_locked(void)
 			g_pool.stat.stream_resets_sent++;
 		}
 		g_pool.stat.upstream_timeouts++;
+		g_pool.consec_timeouts++;
+	}
+
+	/*
+	 * 连续超时到阈值：判定「这条连接已经不可用」，交由驱动线程重建。
+	 * 重建会重新走一遍传输选择（H3 失败即回落 H2），这正是黑洞化时唯一
+	 * 能把服务救回来的动作。
+	 */
+	if (g_pool.consec_timeouts >= 2 && g_pool.up && !g_pool.rebuild) {
+		pr_info("连续 %u 次查询超时，重建上游传输（可能从 H3 回落到 H2）\n",
+			g_pool.consec_timeouts);
+		g_pool.rebuild = true;
+		g_pool.consec_timeouts = 0;
 	}
 }
 

@@ -66,4 +66,12 @@ __visible kdg_u128 __udivti3(kdg_u128 n, kdg_u128 d)
 }
 
 /* 供内核符号解析时识别（非必需，但便于 System.map 审阅）。 */
-EXPORT_SYMBOL_GPL(__udivti3);
+/*
+ * ⚠️ 这里**刻意不导出**。
+ *
+ * 模块形态不需要导出：模块内部的引用在同一次链接里就解析掉了，导出只对
+ * 「别的模块要用」有意义。而一旦导出，树内构建会把这条导出写进
+ * vmlinux 的符号表，随后树外模块构建的 modpost 就会报
+ *   __udivti3 exported twice. Previous export was in vmlinux
+ * 第一次把 kdnsguard 编进内核之后，模块构建正是撞在这条上。
+ */

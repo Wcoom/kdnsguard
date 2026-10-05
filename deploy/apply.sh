@@ -100,6 +100,35 @@ patch_yaml() {
 	return 0
 }
 
+
+# ── 内核态 DNS 自持（不依赖 mihomo）────────────────────────────────────
+# 为什么需要：接管是**进程级**的所有权事务，而 mihomo 正常退出时会 DISABLE。
+# 于是「mihomo 停了 = 全局 DNS 不再由内核解析」—— 这与「内核态 DNS 是设备的
+# 基础设施」这个定位矛盾。这里让开机脚本自己兜底：
+#   * 信任锚由脚本喂（mihomo 不在时没人喂 CA，内核就没法验证上游证书）；
+#   * 只在 **ownership==0 且 mihomo 不在跑** 时由脚本发起 PREPARE/COMMIT。
+#     刻意不在 mihomo 在跑时抢：那时的所有权归它，抢过来会让它的 PREPARE
+#     撞 -EBUSY（内核规定 ACTIVE 时不允许新的 PREPARE）。
+ensure_kernel_dns() {
+	[ -x "$KDG/kdgctl" ] || return 0
+	[ -e /dev/kdnsguard ] || return 0
+
+	"$KDG/kdgctl" trust "$KDG/kdg_root.pem" >/dev/null 2>&1
+
+	own=$("$KDG/kdgctl" health 2>/dev/null |
+	      $BB awk '/ownership/ {print $5; exit}')
+	[ "$own" = "0" ] || return 0
+	pidof mihomo >/dev/null 2>&1 && return 0
+
+	tx=$(date +%s)
+	if "$KDG/kdgctl" prepare "$tx" >/dev/null 2>&1 &&
+	   "$KDG/kdgctl" commit "$tx" >/dev/null 2>&1; then
+		log "内核态 DNS 自持接管（mihomo 未运行）"
+	else
+		log "内核态 DNS 自持接管失败（下一轮重试）"
+	fi
+}
+
 ensure_core() {
 	[ -x "$NEW" ] || { log "没有 mihomo-kdgp4final"; return 1; }
 	want=$($BB md5sum "$NEW" | $BB awk '{print $1}')
@@ -131,6 +160,11 @@ if [ -x "$NEW" ]; then
 fi
 need_yaml=0
 need_patch && need_yaml=1
+
+# ⚠️ 内核接管的自持必须放在**这个提前返回之前**：核心与配置都已就绪时脚本
+# 会直接 exit，而「mihomo 停了要由脚本兜底接管」恰恰发生在那种情况下
+# （第一版放在后面，于是永远走不到，实测表现为"什么都没发生"）。
+ensure_kernel_dns
 
 if [ "$need_core" -eq 0 ] && [ "$need_yaml" -eq 0 ]; then
 	exit 0
