@@ -44,6 +44,14 @@ static u64 kdg_up_now_ms(void)
 	return div_u64(ktime_get_ns(), 1000000ULL);
 }
 
+/* 「暂时别试 H3」的截止时刻（见 kdg_upstream_open 里的说明）。 */
+static u64 kdg_h3_retry_after_ms;
+
+static u64 now_ms(void)
+{
+	return kdg_up_now_ms();
+}
+
 /* 把 H3 层已完成的请求搬进调用方的 kdg_h2_stream。 */
 static void kdg_up_h3_collect(struct kdg_upstream *u)
 {
@@ -202,8 +210,19 @@ int kdg_upstream_open(struct kdg_upstream **out, const struct kdg_doh_cfg *cfg,
 	 * 发生 —— 已经跑起来的 H3 连接中途坏掉，是「这条连接坏了」，换协议
 	 * 重试属于池层重建连接的职责，不是这里的。
 	 */
-	if (cfg->allow_h3) {
+	/*
+	 * H3 最近失败过就暂时跳过它。
+	 *
+	 * 为什么必须这样：UDP/443 被封的网络里，每次 H3 尝试都要耗掉整个
+	 * deadline（默认 3 秒）才失败 —— 而这个代价发生在**重建连接**时，
+	 * 正是 DNS 最不能等的时刻。真机实测：不跳过时重建循环能把
+	 * pool_connects 在十几秒里推到 45。60 秒的窗口足够让一次网络切换
+	 * 重新被尝到，又不至于让每次重建都白等。
+	 */
+	if (cfg->allow_h3 && now_ms() >= kdg_h3_retry_after_ms) {
 		ret = kdg_upstream_open_h3(u, cfg, deadline_ms);
+		if (ret)
+			kdg_h3_retry_after_ms = now_ms() + 60000;
 		if (!ret) {
 			u->is_h3 = true;
 			pr_info("上游已连接：HTTP/3（QUIC）\n");

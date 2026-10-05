@@ -177,6 +177,12 @@ enum kdg_health_attr {
 	KDG_HA_POOL_SLOTS_USED,		/* u32：已用槽位 */
 	KDG_HA_POOL_SLOTS_MAX,		/* u32：槽位上限 */
 	KDG_HA_POOL_CONNECTED,		/* u8：连接当前是否可用 */
+	/* 追加于尾部。BPF 发布表（见 KDG_CMD_SET_BPF_MAP）：
+	 * 是否已挂接、累计发布条数。这是「内核解析结果真的进了 eBPF 那张表」
+	 * 的唯一可观测证据 —— 表在用户空间，内核不写日志，没有这个计数就只能
+	 * 靠猜。 */
+	KDG_HA_BPF_MAP_ACTIVE,		/* u8：1 = 已挂接一张表 */
+	KDG_HA_BPF_PUBLISHED,		/* u64：累计发布条数 */
 	__KDG_HA_MAX,
 };
 #define KDG_HA_MAX (__KDG_HA_MAX - 1)

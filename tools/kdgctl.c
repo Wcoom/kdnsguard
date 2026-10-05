@@ -439,6 +439,8 @@ static const char *ha_name(u16 type)
 	case KDG_HA_POOL_SLOTS_USED:		return "pool_slots_used";
 	case KDG_HA_POOL_SLOTS_MAX:		return "pool_slots_max";
 	case KDG_HA_POOL_CONNECTED:		return "pool_connected";
+	case KDG_HA_BPF_MAP_ACTIVE:		return "bpf_map_active";
+	case KDG_HA_BPF_PUBLISHED:		return "bpf_published";
 	default:				return (const char *)0;
 	}
 }

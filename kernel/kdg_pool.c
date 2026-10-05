@@ -107,9 +107,13 @@ struct kdg_pool {
 	 * （最典型是移动网络封了 UDP/443：QUIC 连接不会收到任何错误，也就
 	 * 永远不会判死），池层会一直往一条死连接上发请求，每条都等到超时。
 	 * 真机实测：手机上换到只允许 TCP 的网络后，DNS 就这样全超时，而
-	 * 上游"已连接"（H3）状态一直挂着、从不重建、也就没有机会回落到 H2。
-	 * 判据取「连续两次超时」：一次慢查询不该把连接推倒重来。 */
+	 * 上游"已连接"（H3）状态一直挂着、从不重建、也就没有机会回落到 H2。 */
 	u32			consec_timeouts;
+	/* 重建冷却期。⚠️ 没有它就会**自己把自己打死**：重建要先试 H3，而
+	 * UDP 被封的网络里这一步要耗掉整个 deadline 才失败，这期间的查询全部
+	 * 超时 —— 于是一次重建立刻引发下一次重建。真机实测 pool_connects 在
+	 * 十几秒里涨到 45，DNS 一直不可用。冷却期内只允许重建一次。 */
+	u64			rebuild_after_ms;
 	/* 对端声明的并发流上限的**缓存**。驱动线程负责刷新，其他线程只读 ——
 	 * nghttp2 的会话不是线程安全的，从别的线程去读它的 remote_settings
 	 * 就是并发访问协议栈内部状态。 */
@@ -321,11 +325,15 @@ static void kdg_pool_sweep_locked(void)
 	 * 重建会重新走一遍传输选择（H3 失败即回落 H2），这正是黑洞化时唯一
 	 * 能把服务救回来的动作。
 	 */
-	if (g_pool.consec_timeouts >= 2 && g_pool.up && !g_pool.rebuild) {
+	if (g_pool.consec_timeouts >= 3 && g_pool.up && !g_pool.rebuild &&
+	    now >= g_pool.rebuild_after_ms) {
 		pr_info("连续 %u 次查询超时，重建上游传输（可能从 H3 回落到 H2）\n",
 			g_pool.consec_timeouts);
 		g_pool.rebuild = true;
 		g_pool.consec_timeouts = 0;
+		/* 冷却 30 秒：重建本身要花掉一次 H3 失败的时间，期间超时是
+		 * 必然的，不能拿它当「新连接也坏了」的证据。 */
+		g_pool.rebuild_after_ms = now + 30000;
 	}
 }
 

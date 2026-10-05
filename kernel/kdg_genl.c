@@ -390,6 +390,10 @@ static int kdg_genl_health(struct sk_buff *skb, struct genl_info *info)
 				      ps.idle_closes, KDG_HA_UNSPEC) ||
 		    nla_put_u64_64bit(msg, KDG_HA_POOL_CONN_ERRORS,
 				      ps.conn_errors, KDG_HA_UNSPEC) ||
+		    nla_put_u8(msg, KDG_HA_BPF_MAP_ACTIVE,
+			       kdg_bpfpub_active() ? 1 : 0) ||
+		    nla_put_u64_64bit(msg, KDG_HA_BPF_PUBLISHED,
+				      kdg_bpfpub_published(), KDG_HA_UNSPEC) ||
 		    nla_put_u64_64bit(msg, KDG_HA_POOL_UPSTREAM_TIMEOUTS,
 				      ps.upstream_timeouts, KDG_HA_UNSPEC) ||
 		    nla_put_u64_64bit(msg, KDG_HA_POOL_REJECTED, ps.rejected,
