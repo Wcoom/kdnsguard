@@ -25,3 +25,4 @@ kernel/nghttp2/
 # Rust 客户端构建产物
 clients/rust/target/
 tools/chrneg
+tools/kdgwatchd

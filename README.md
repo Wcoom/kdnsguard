@@ -9,7 +9,7 @@
 
 ---
 
-## 当前状态：P0–P4 完成（P4 已真机 Path A 接管验证），P5 未开始
+## 当前状态：P0–P4 完成，P5 常驻已落地（设备当前处于接管态）
 
 | 阶段 | 状态 |
 |---|---|
@@ -19,15 +19,14 @@
 | **P2** 解析核心：缓存 / 同名合并 / 每调用方配额 / **H2 上游（nghttp2）** | ✅ 完成并真机验证 |
 | **P2 补齐：方案 §6.3 的 H2 持久连接池** | ✅ 已实现并**真机验证**（[`docs/P2-connection-pool.md`](docs/P2-connection-pool.md)、[`docs/P6-round2.md`](docs/P6-round2.md)） |
 | **P3** 全局接管（双栈 NAT / 代理所有权交接 / 泄漏与失败策略） | ✅ **已在受控窗口内真机接管并验证**，见 [`docs/P3-takeover.md`](docs/P3-takeover.md) |
-| **P4** 核心 DNS 移交 | ✅ **Path A 真机接管已验证**（[`docs/P4-final.md`](docs/P4-final.md)）：mihomo 自身解析走内核字符设备，App 53 走 eBPF `dns-mode: off` + 内核 NAT；开窗口前修掉 `Invalid()` 写反 / 字符设备 `op_enter` 泄漏 / TCP `TIME_WAIT` 占 1054。生成器持久化与 FakeIP 产品决策仍待定 |
-| **P6** 功耗定型 | 🟡 第一轮测量完成（[`docs/P6-measurements.md`](docs/P6-measurements.md)）：**能耗不可测**（无功率仪 + 手机在充电），但测出并量化了上游连接池缺失的代价；见下 |
-| **P5** 安卓平台对齐 | 🟡 **范围已缩小**（[`docs/P5-scope.md`](docs/P5-scope.md)）：澄清之后不再需要 AOSP DnsResolver/APEX 状态桥，只剩非 root 设备访问、网络事件驱动事务、常驻交付形态三类工程项；⛔ 未开始 |
-| P7 全内核 H3 | ⬜ 未开始 |
+| **P4** 核心 DNS 移交 | ✅ **Path A 真机接管已验证**（[`docs/P4-final.md`](docs/P4-final.md)） |
+| **P5** 常驻交付 | ✅ LKM + `service.d`（[`docs/P5-persist.md`](docs/P5-persist.md)、[`deploy/`](deploy/)）。**设备当前处于接管态**。FakeIP 改为 `redir-host`（内核返回真实 IP）。ueventd / 多网络 isolation 未做 |
+| **P6** 功耗定型 | 🟡 测量完成；**能耗不可测**（无功率仪 + 手机在充电），不宣传更低能耗 |
+| P7 全内核 H3 | ⛔ **按方案 §6.5 停在 H2**：mbedTLS 无 QUIC API；wolfSSL 已拒；本树无 in-tree QUIC；`lxin/quic` 握手在用户态 |
 
-**接管默认关闭**：`ownership=0`、listener 不启动、NAT hook 只计数不改写。
-启用路径是 `PREPARE → COMMIT` 的 ownership 事务（且模块须以 `allow_intercept=1`
-加载）。2026-10-05 的真机接管验证是在**受控窗口**内做的，跑完即改回原配置，
-设备当前不处于接管态。
+**常驻后接管默认打开**（`/data/adb/kdnsguard/enabled` 存在且开机脚本跑过）。
+模块仍须 `allow_intercept=1`。卸载：`sh /data/adb/kdnsguard/disable.sh`。
+私人 DNS 必须保持 `off`。上游是 H2 DoH，不是 H3。
 
 ### P3 真机验证摘要（2026-10-05，详见 `docs/P3-takeover.md`）
 

@@ -91,12 +91,13 @@ status    = 暂缓（H3 未立项）
 [lxin-quic]
 repo      = https://github.com/lxin/quic
 commit    = 5705d4fcc31135a633504f575eb9e5acbf0fba8f
-license   = ⚠️ NOASSERTION —— GitHub 未能识别标准许可证，**必须人工核实**
-license_ok = UNKNOWN
+license   = 内核侧 GPL-2.0+；uapi GPL-2.0+ WITH Linux-syscall-note；libquic LGPL-2.1+
+license_ok = yes  # 2026-10-05 核实 COPYING；GitHub NOASSERTION 是没识别拆开的 COPYING
 used_for  = 内核 QUIC 数据层（P7，实验阶段）
-status    = BLOCKED —— 在许可证核实清楚之前不得引入
-notes     = 其官方设计把 TLS 握手放在用户空间，本身就不是满足「全内核」要求的
-            成品（方案 §6.5 已指出）。引入前需先解决许可证问题。
+status    = BLOCKED —— 许可证已清，**设计仍把握手放在用户态**（GnuTLS/libquic/tlshd）
+notes     = 方案 §6.5 禁止把用户态握手叫做全内核 H3。mbedTLS 3.6.7 无 quic.h，
+            wolfSSL QUIC API 已因 GPLv3 拒绝，本树 6.6.118 无 in-tree QUIC。
+            停在已验证的 H2 DoH。
 
 [dnsproxy]
 repo      = https://github.com/AdguardTeam/dnsproxy
