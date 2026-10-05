@@ -1,0 +1,25 @@
+mihomo pid=27550  HZ=100
+
+########## 0. 基线噪声：mihomo 空闲 5 秒的 CPU ##########
+  空闲 5s: 0 ms
+  空闲 5s: 40 ms
+  空闲 5s: 0 ms
+
+########## A：用户态基线 ##########
+label=A4-real-cold-c16-r1 mode=udp concurrency=16 n_ok=159 n_err=0 wall_ms=1852 cpu_ms=9 ctxt_vol=3 ctxt_invol=0 p50_us=107983 p95_us=277166 p99_us=400074 max_us=879065 min_us=1200 qps=85.8 mihomo_pid=19014 mihomo_cpu_ms=230
+label=A4-real-cold-c16-r2 mode=udp concurrency=16 n_ok=159 n_err=0 wall_ms=710 cpu_ms=6 ctxt_vol=1 ctxt_invol=0 p50_us=53904 p95_us=111306 p99_us=153947 max_us=185326 min_us=268 qps=223.8 mihomo_pid=22274 mihomo_cpu_ms=100
+label=A4-real-cold-c16-r3 mode=udp concurrency=16 n_ok=159 n_err=0 wall_ms=568 cpu_ms=8 ctxt_vol=4 ctxt_invol=0 p50_us=50614 p95_us=92612 p99_us=106603 max_us=106899 min_us=684 qps=279.8 mihomo_pid=25213 mihomo_cpu_ms=130
+label=A4-random1000-cold-c16-r1 mode=udp concurrency=16 n_ok=1000 n_err=0 wall_ms=5165 cpu_ms=38 ctxt_vol=3 ctxt_invol=0 p50_us=80293 p95_us=127191 p99_us=150898 max_us=180970 min_us=38341 qps=193.6 mihomo_pid=28268 mihomo_cpu_ms=980
+label=A4-random1000-cold-c16-r2 mode=udp concurrency=16 n_ok=1000 n_err=0 wall_ms=4811 cpu_ms=39 ctxt_vol=2 ctxt_invol=0 p50_us=70978 p95_us=130007 p99_us=145865 max_us=154022 min_us=33104 qps=207.8 mihomo_pid=32313 mihomo_cpu_ms=890
+label=A4-random1000-cold-c16-r3 mode=udp concurrency=16 n_ok=1000 n_err=0 wall_ms=5042 cpu_ms=88 ctxt_vol=5 ctxt_invol=0 p50_us=69246 p95_us=143226 p99_us=157174 max_us=165765 min_us=35992 qps=198.3 mihomo_pid=7813 mihomo_cpu_ms=2050
+
+########## C：内核路径 ##########
+label=C4-real-cold-c16-r1 mode=chardev concurrency=16 n_ok=159 n_err=0 wall_ms=2337 cpu_ms=24 ctxt_vol=8 ctxt_invol=0 p50_us=118075 p95_us=348679 p99_us=486811 max_us=1127700 min_us=41117 qps=68.0 driver_cpu_ms=30
+label=C4-real-cold-c16-r2 mode=chardev concurrency=16 n_ok=159 n_err=0 wall_ms=1397 cpu_ms=31 ctxt_vol=6 ctxt_invol=0 p50_us=129331 p95_us=305175 p99_us=348135 max_us=353780 min_us=44965 qps=113.8 driver_cpu_ms=50
+label=C4-random1000-cold-c16-r1 mode=chardev concurrency=16 n_ok=1000 n_err=0 wall_ms=7402 cpu_ms=134 ctxt_vol=9 ctxt_invol=0 p50_us=116317 p95_us=196034 p99_us=247322 max_us=278709 min_us=43544 qps=135.1 driver_cpu_ms=150
+  计数:   attr 11 doh_queries len=8  1000   attr 32 h2_requests len=8  1000   attr 47 pool_connects len=8  1 
+label=C4-random1000-cold-c16-r2 mode=chardev concurrency=16 n_ok=1000 n_err=0 wall_ms=7136 cpu_ms=131 ctxt_vol=10 ctxt_invol=0 p50_us=112300 p95_us=200076 p99_us=245309 max_us=292732 min_us=46607 qps=140.1 driver_cpu_ms=140
+  计数:   attr 11 doh_queries len=8  1000   attr 32 h2_requests len=8  1000   attr 47 pool_connects len=8  1 
+
+rmmod rc=0
+告警=0

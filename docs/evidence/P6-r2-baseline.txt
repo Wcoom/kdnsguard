@@ -1,0 +1,9 @@
+### 监听自检（用 /proc/net 而不是 busybox ss：后者在部分机型上拿不到 -p）
+1053(0x1495) 条目数=0
+label=A2-real-cold-c1 mode=udp concurrency=1 n_ok=159 n_err=0 wall_ms=21469 cpu_ms=18 ctxt_vol=1 ctxt_invol=0 p50_us=120063 p95_us=308051 p99_us=407574 max_us=809094 min_us=554 qps=7.4
+label=A2-real-cold-c16 mode=udp concurrency=16 n_ok=159 n_err=0 wall_ms=746 cpu_ms=12 ctxt_vol=3 ctxt_invol=1 p50_us=63365 p95_us=121334 p99_us=148049 max_us=168352 min_us=892 qps=213.1
+label=A2-real-cold-c64 mode=udp concurrency=64 n_ok=159 n_err=0 wall_ms=204 cpu_ms=26 ctxt_vol=18 ctxt_invol=4 p50_us=63854 p95_us=113064 p99_us=130577 max_us=130840 min_us=2026 qps=777.0
+label=A2-burst100 mode=udp concurrency=32 n_ok=100 n_err=0 wall_ms=62 cpu_ms=8 ctxt_vol=11 ctxt_invol=0 p50_us=1188 p95_us=59029 p99_us=59355 max_us=60326 min_us=90 qps=1607.5
+label=A2-random1000 mode=udp concurrency=16 n_ok=1000 n_err=0 wall_ms=4634 cpu_ms=89 ctxt_vol=3 ctxt_invol=0 p50_us=66228 p95_us=117298 p99_us=135716 max_us=167082 min_us=39273 qps=215.8
+### 基线连通性复核
+label=A2-smoke mode=udp concurrency=1 n_ok=5 n_err=0 wall_ms=157 cpu_ms=1 ctxt_vol=1 ctxt_invol=0 p50_us=43183 p95_us=57068 p99_us=57068 max_us=57068 min_us=344 qps=31.7

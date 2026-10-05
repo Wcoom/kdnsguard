@@ -219,6 +219,20 @@ static int h2_stream_close_cb(nghttp2_session *session, int32_t stream_id,
 		/* 流被重置时若还没拿到完整响应，就是失败。 */
 		if (!st->done && !st->err)
 			st->err = -ECONNRESET;
+	} else if (st->done && !st->err) {
+		/*
+		 * 「协议层干净关闭」。
+		 *
+		 * ⚠️ 它与「这次 DoH 请求成功」**不是一回事**：后者还要 200 与
+		 * content-type，那由池层判定（KDG_HA_POOL_* 那一组）。这里只是
+		 * 会话视角下唯一有意义的成功量。
+		 *
+		 * 这行是补回来的：旧版 `h2_ok` 的 `g_stat.ok++` 长在「一次请求
+		 * 一个会话」的那条路径上，那个路径被删掉之后它**再也没被写过**，
+		 * 于是 GET_HEALTH 里 `h2_ok` 恒为 0 —— 一个永远报 0 的诊断量比
+		 * 没有这个量更糟，它会被当成「一次都没成功」。
+		 */
+		g_stat.ok++;
 	}
 	st->done = true;
 	return 0;

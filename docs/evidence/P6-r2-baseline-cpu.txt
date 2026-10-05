@@ -1,0 +1,12 @@
+  mihomo 静下来用了 10s
+label=A5-random1000-r1 mode=udp concurrency=16 n_ok=1000 n_err=0 wall_ms=5470 cpu_ms=96 ctxt_vol=1 ctxt_invol=0 p50_us=83143 p95_us=135840 p99_us=155931 max_us=201636 min_us=40336 qps=182.8
+  mihomo_cpu_ms=1320
+  mihomo 静下来用了 14s
+label=A5-random1000-r2 mode=udp concurrency=16 n_ok=1000 n_err=0 wall_ms=4716 cpu_ms=88 ctxt_vol=5 ctxt_invol=3 p50_us=64241 p95_us=127889 p99_us=143802 max_us=154700 min_us=37826 qps=212.0
+  mihomo_cpu_ms=1030
+  mihomo 静下来用了 8s
+label=A5-random1000-r3 mode=udp concurrency=16 n_ok=1000 n_err=0 wall_ms=5360 cpu_ms=99 ctxt_vol=6 ctxt_invol=0 p50_us=77056 p95_us=130799 p99_us=159595 max_us=170740 min_us=41656 qps=186.5
+  mihomo_cpu_ms=1200
+  mihomo 静下来用了 7s
+label=A5-random1000-r4 mode=udp concurrency=16 n_ok=1000 n_err=0 wall_ms=4564 cpu_ms=91 ctxt_vol=2 ctxt_invol=0 p50_us=63481 p95_us=119347 p99_us=134996 max_us=149919 min_us=38143 qps=219.1
+  mihomo_cpu_ms=1020

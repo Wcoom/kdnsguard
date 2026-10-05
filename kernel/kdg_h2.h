@@ -82,12 +82,14 @@ bool kdg_h2_session_peer_settings_seen(const struct kdg_h2_session *s);
 struct kdg_h2_stats {
 	u64 sessions;		/* 建立过的会话数（= 连接数） */
 	u64 requests;		/* 提交过的流数 */
-	u64 ok;
-	u64 failed;
+	u64 ok;			/* 协议层干净关闭的流（不是「DoH 成功」，那是池层的事） */
 	u64 proto_errors;	/* nghttp2 层错误 */
 	u64 stream_resets;
-	u64 non_200;
 	u64 goaways;
+	/* 下面两个只写不报（暂无对应的 KDG_HA_ 属性），留给诊断时的
+	 * dmesg 关联用。**注意别再往这里加「既不写也不报」的字段** ——
+	 * `ok` 就曾经因为长在一条被删掉的路径上而恒为 0，一个永远报 0 的
+	 * 诊断量比没有它更糟。 */
 	u32 last_nghttp2_err;
 	u32 last_status;
 };

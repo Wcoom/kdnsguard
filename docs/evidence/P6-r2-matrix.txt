@@ -1,0 +1,81 @@
+########## 0. 环境 ##########
+内核=6.6.118-android15-8-gf4dc45704e54-abogki20260727-4k  构建号=#16
+uptime=8116.21s
+出口接口=  地址=
+充电=Charging current_now=-155
+kdgbench=653208  ko=1932448
+real.txt=159 行  burst100=100 行  random1000=1000 行
+
+########## 1. 基线 A：mihomo 用户态 DNS（127.0.0.1:1053）##########
+!! 1053 未监听
+label=A-real-cold-c1 mode=udp concurrency=1 n_ok=159 n_err=0 wall_ms=27035 cpu_ms=22 ctxt_vol=1 ctxt_invol=0 p50_us=155707 p95_us=402077 p99_us=644688 max_us=844327 min_us=579 qps=5.9
+label=A-real-cold-c16 mode=udp concurrency=16 n_ok=159 n_err=0 wall_ms=149 cpu_ms=8 ctxt_vol=3 ctxt_invol=0 p50_us=533 p95_us=2873 p99_us=107140 max_us=141696 min_us=92 qps=1061.1
+label=A-real-cold-c64 mode=udp concurrency=64 n_ok=159 n_err=0 wall_ms=11 cpu_ms=16 ctxt_vol=18 ctxt_invol=2 p50_us=2895 p95_us=3549 p99_us=5394 max_us=5837 min_us=79 qps=14161.4
+label=A-burst100 mode=udp concurrency=32 n_ok=100 n_err=0 wall_ms=5 cpu_ms=8 ctxt_vol=9 ctxt_invol=0 p50_us=1110 p95_us=1656 p99_us=2310 max_us=2557 min_us=151 qps=19403.9
+label=A-random1000 mode=udp concurrency=16 n_ok=1000 n_err=0 wall_ms=4690 cpu_ms=90 ctxt_vol=7 ctxt_invol=1 p50_us=66762 p95_us=119615 p99_us=130653 max_us=163803 min_us=40133 qps=213.2
+
+########## 2. 内核路径 C：冷 / 热（每档重载模块以得真空缓存）##########
+label=C-real-cold-c1 mode=chardev concurrency=1 n_ok=159 n_err=0 wall_ms=14473 cpu_ms=20 ctxt_vol=2 ctxt_invol=0 p50_us=52013 p95_us=416473 p99_us=431423 max_us=456740 min_us=39979 qps=11.0 driver_cpu_ms=63
+  cold 计数: attr 11 doh_queries len=8  159|attr 12 doh_ok len=8  159|attr 21 resolve_cache len=8  0|attr 22 resolve_upstream len=8  159|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  159|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  158|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  64 (0x00000040)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+label=C-real-warm-c1 mode=chardev concurrency=1 n_ok=159 n_err=0 wall_ms=6171 cpu_ms=2 ctxt_vol=1 ctxt_invol=0 p50_us=5 p95_us=277497 p99_us=491086 max_us=495249 min_us=2 qps=25.8 driver_cpu_ms=5
+  warm 计数: attr 11 doh_queries len=8  188|attr 12 doh_ok len=8  188|attr 21 resolve_cache len=8  130|attr 22 resolve_upstream len=8  188|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  188|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  187|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  64 (0x00000040)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+  驱动线程数=1
+label=C-real-cold-c16 mode=chardev concurrency=16 n_ok=159 n_err=0 wall_ms=1843 cpu_ms=9 ctxt_vol=7 ctxt_invol=0 p50_us=98920 p95_us=274239 p99_us=330632 max_us=870888 min_us=39998 qps=86.3 driver_cpu_ms=24
+  cold 计数: attr 11 doh_queries len=8  159|attr 12 doh_ok len=8  159|attr 21 resolve_cache len=8  0|attr 22 resolve_upstream len=8  159|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  159|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  156|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  64 (0x00000040)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+label=C-real-warm-c16 mode=chardev concurrency=16 n_ok=159 n_err=0 wall_ms=165 cpu_ms=3 ctxt_vol=1 ctxt_invol=0 p50_us=5 p95_us=43 p99_us=117714 max_us=164425 min_us=3 qps=961.7 driver_cpu_ms=1
+  warm 计数: attr 11 doh_queries len=8  165|attr 12 doh_ok len=8  165|attr 21 resolve_cache len=8  153|attr 22 resolve_upstream len=8  165|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  165|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  162|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  64 (0x00000040)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+  驱动线程数=1
+label=C-real-cold-c64 mode=chardev concurrency=64 n_ok=159 n_err=0 wall_ms=459 cpu_ms=26 ctxt_vol=45 ctxt_invol=0 p50_us=86803 p95_us=307740 p99_us=308721 max_us=403250 min_us=53436 qps=345.8 driver_cpu_ms=38
+  cold 计数: attr 11 doh_queries len=8  159|attr 12 doh_ok len=8  159|attr 21 resolve_cache len=8  0|attr 22 resolve_upstream len=8  159|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  159|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  157|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  64 (0x00000040)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+label=C-real-warm-c64 mode=chardev concurrency=64 n_ok=159 n_err=0 wall_ms=391 cpu_ms=14 ctxt_vol=42 ctxt_invol=0 p50_us=7 p95_us=265280 p99_us=362540 max_us=390338 min_us=3 qps=405.7 driver_cpu_ms=4
+  warm 计数: attr 11 doh_queries len=8  192|attr 12 doh_ok len=8  192|attr 21 resolve_cache len=8  126|attr 22 resolve_upstream len=8  192|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  192|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  190|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  64 (0x00000040)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+  驱动线程数=1
+
+########## 3. 同名爆发（§17.3：100 并发同名只应发 1 次上游）##########
+label=C-burst100 mode=chardev concurrency=32 n_ok=100 n_err=0 wall_ms=143 cpu_ms=11 ctxt_vol=11 ctxt_invol=3 p50_us=7 p95_us=142346 p99_us=142880 max_us=142963 min_us=7 qps=695.4 driver_cpu_ms=18
+  计数: attr 11 doh_queries len=8  1|attr 12 doh_ok len=8  1|attr 21 resolve_cache len=8  68|attr 22 resolve_upstream len=8  1|attr 23 resolve_joined len=8  31|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  1|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  0|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  32 (0x00000020)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+rmmod rc=0  驱动线程数=0
+
+########## 4. 随机域名 1000（缓存完全帮不上忙）##########
+label=C-random1000 mode=chardev concurrency=16 n_ok=1000 n_err=0 wall_ms=6818 cpu_ms=93 ctxt_vol=8 ctxt_invol=0 p50_us=109695 p95_us=168061 p99_us=266323 max_us=267884 min_us=43889 qps=146.7 driver_cpu_ms=145
+  计数: attr 11 doh_queries len=8  1000|attr 12 doh_ok len=8  1000|attr 21 resolve_cache len=8  0|attr 22 resolve_upstream len=8  1000|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  1000|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  998|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  64 (0x00000040)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+rmmod rc=0  驱动线程数=0
+
+########## 5. 池化证据：一条连接服务了多少次查询 ##########
+label=C-pool-evidence mode=chardev concurrency=16 n_ok=159 n_err=0 wall_ms=2082 cpu_ms=19 ctxt_vol=11 ctxt_invol=0 p50_us=124928 p95_us=323730 p99_us=409291 max_us=944524 min_us=37642 qps=76.3 driver_cpu_ms=44
+  第一次: attr 11 doh_queries len=8  159|attr 12 doh_ok len=8  159|attr 21 resolve_cache len=8  0|attr 22 resolve_upstream len=8  159|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  159|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  156|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  64 (0x00000040)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+label=C-pool-evidence2 mode=chardev concurrency=16 n_ok=159 n_err=0 wall_ms=282 cpu_ms=6 ctxt_vol=4 ctxt_invol=0 p50_us=5 p95_us=161900 p99_us=162687 max_us=281750 min_us=3 qps=561.9 driver_cpu_ms=1
+  第二次: attr 11 doh_queries len=8  172|attr 12 doh_ok len=8  172|attr 21 resolve_cache len=8  146|attr 22 resolve_upstream len=8  172|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  172|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  169|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  64 (0x00000040)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+
+########## 6. 空闲关闭（方案 §6.3：60–180 秒）##########
+查询前: attr 11 doh_queries len=8  172|attr 12 doh_ok len=8  172|attr 21 resolve_cache len=8  146|attr 22 resolve_upstream len=8  172|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  172|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  169|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  64 (0x00000040)|attr 52 pool_idle_closes len=8  0|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+空闲 95s 后: attr 11 doh_queries len=8  172|attr 12 doh_ok len=8  172|attr 21 resolve_cache len=8  146|attr 22 resolve_upstream len=8  172|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  1|attr 32 h2_requests len=8  172|attr 47 pool_connects len=8  1|attr 48 pool_reused len=8  169|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  0 (0x00000000)|attr 52 pool_idle_closes len=8  1|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  0|
+label=C-after-idle mode=chardev concurrency=1 n_ok=5 n_err=0 wall_ms=344 cpu_ms=0 ctxt_vol=1 ctxt_invol=1 p50_us=26 p95_us=344246 p99_us=344246 max_us=344246 min_us=7 qps=14.5 driver_cpu_ms=20
+再次查询后: attr 11 doh_queries len=8  173|attr 12 doh_ok len=8  173|attr 21 resolve_cache len=8  150|attr 22 resolve_upstream len=8  173|attr 23 resolve_joined len=8  0|attr 31 h2_sessions len=8  2|attr 32 h2_requests len=8  173|attr 47 pool_connects len=8  2|attr 48 pool_reused len=8  169|attr 49 pool_inflight len=4  0 (0x00000000)|attr 50 pool_queued len=4  0 (0x00000000)|attr 51 pool_stream_limit len=4  32 (0x00000020)|attr 52 pool_idle_closes len=8  1|attr 53 pool_conn_errors len=8  0|attr 54 pool_upstream_timeouts len=8  0|attr 55 pool_rejected len=8  0|attr 56 pool_h1_fallbacks len=8  0|attr 57 pool_slots_used len=4  0 (0x00000000)|attr 59 pool_connected len=1  1|
+
+########## 7. 收尾 ##########
+rmmod rc=0
+驱动线程数=0
+模块数=670
+告警=0
+kdnsguard 相关 dmesg:
+[ 8291.043603] kdnsguard: 信任锚加载：本次 1 张，累计 1 张
+[ 8297.428197] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[ 8297.428233] kdnsguard: up: 上游连接就绪（d6382545.6.00p.net:443，ALPN h2）
+[ 8306.987430] kdnsguard: pool: 上游连接已关闭（驱动线程退出）
+[ 8306.987999] kdnsguard: 已卸载
+[ 8319.349241] kdnsguard: mbedTLS 平台层就绪（mem/printf/time/entropy 均已注入）
+[ 8319.349262] kdnsguard: TLS 子系统就绪（CTR_DRBG 已播种，信任锚 0 张）
+[ 8319.349514] kdnsguard: cache: 就绪：4096 槽位（结构 1440 KiB）/ 1024 桶 / 内存上限 8192 KiB
+[ 8319.349543] kdnsguard: map: 就绪：512 槽（条目 632 B，合计约 316 KiB）/ 1024 桶
+[ 8319.349555] kdnsguard: /dev/kdnsguard 已注册（major 440，root:root 0600）
+[ 8319.349567] kdnsguard: NAT hook 已注册（IPv4+IPv6，LOCAL_OUT + PREROUTING）
+[ 8319.349568] kdnsguard: 已加载：ABI v1，监听端口 1054，接管 未启用（capability=0x00000003）
+[ 8319.352870] kdnsguard: 信任锚加载：本次 1 张，累计 1 张
+[ 8325.808354] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[ 8325.808624] kdnsguard: up: 上游连接就绪（d6382545.6.00p.net:443，ALPN h2）
+[ 8426.478756] kdnsguard: pool: 上游连接已关闭（空闲超时）
+[ 8439.275974] kdnsguard: TLS 握手完成（协议 TLSv1.3，密码套件 TLS1-3-CHACHA20-POLY1305-SHA256，ALPN h2）
+[ 8439.276020] kdnsguard: up: 上游连接就绪（d6382545.6.00p.net:443，ALPN h2）
+[ 8443.499014] kdnsguard: pool: 上游连接已关闭（驱动线程退出）
+[ 8443.499342] kdnsguard: 已卸载
