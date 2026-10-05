@@ -59,6 +59,10 @@ int kdg_quic_keys_from_secret(struct kdg_quic_keys *k, enum kdg_quic_suite s,
 void kdg_quic_keys_free(struct kdg_quic_keys *k);
 
 /* 由客户端选择的原始 DCID 派生 Initial 两个方向的密钥（RFC 9001 §5.2）。 */
+/* RFC 9001 §5.8 Retry 完整性标签：AAD 是整包（含标签前的全部字节）。 */
+int kdg_quic_retry_tag(const u8 *odcid, size_t odcid_len, const u8 *pkt,
+		       size_t pkt_len, u8 tag[KDG_QUIC_TAG_LEN]);
+
 int kdg_quic_initial_keys(const u8 *dcid, size_t dcid_len,
 			  struct kdg_quic_keys *client,
 			  struct kdg_quic_keys *server);

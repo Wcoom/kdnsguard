@@ -10,8 +10,15 @@
  */
 #include "kdg_quic_crypto.h"
 
-#ifndef __KERNEL__
+#ifdef __KERNEL__
+#include <linux/slab.h>
+#define kqc_alloc(n)	kmalloc((n), GFP_KERNEL)
+#define kqc_free(p)	kfree(p)
+#else
 #include <errno.h>
+#include <stdlib.h>
+#define kqc_alloc(n)	malloc(n)
+#define kqc_free(p)	free(p)
 #endif
 
 #include <mbedtls/hkdf.h>
@@ -117,6 +124,44 @@ void kdg_quic_keys_free(struct kdg_quic_keys *k)
 		mbedtls_chachapoly_free(&k->aead.cp);
 	}
 	mbedtls_platform_zeroize(k, sizeof(*k));
+}
+
+int kdg_quic_retry_tag(const u8 *odcid, size_t odcid_len, const u8 *pkt,
+		       size_t pkt_len, u8 tag[KDG_QUIC_TAG_LEN])
+{
+	u8 secret[32] = { 0 }, key[16], nonce[12];
+	u8 *pseudo;
+	mbedtls_gcm_context gcm;
+	size_t n = 0, cap = odcid_len + 1 + pkt_len;
+	int ret;
+
+	/* 4 KB 级的伪包放堆上：内核栈软上限 2048 字节/帧，栈上放它会告警 */
+	pseudo = kqc_alloc(cap);
+	if (!pseudo)
+		return -ENOMEM;
+	pseudo[n++] = (u8)odcid_len;
+	memcpy(pseudo + n, odcid, odcid_len);
+	n += odcid_len;
+	memcpy(pseudo + n, pkt, pkt_len);
+	n += pkt_len;
+
+	if (kdg_quic_hkdf_expand_label(secret, sizeof(secret), "quic retry key",
+				       NULL, 0, key, sizeof(key)) ||
+	    kdg_quic_hkdf_expand_label(secret, sizeof(secret), "quic retry nonce",
+				       NULL, 0, nonce, sizeof(nonce))) {
+		kqc_free(pseudo);
+		return -EIO;
+	}
+	mbedtls_gcm_init(&gcm);
+	ret = mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, key, 128);
+	if (!ret)
+		ret = mbedtls_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_ENCRYPT, 0,
+						nonce, sizeof(nonce), pseudo, n,
+						NULL, NULL, KDG_QUIC_TAG_LEN, tag);
+	mbedtls_gcm_free(&gcm);
+	mbedtls_platform_zeroize(pseudo, n);
+	kqc_free(pseudo);
+	return ret ? -EIO : 0;
 }
 
 int kdg_quic_initial_keys(const u8 *dcid, size_t dcid_len,
