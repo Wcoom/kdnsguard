@@ -31,10 +31,11 @@ if [ "$ENABLE_ONLY" -eq 0 ]; then
 	$ADB push "$CORE" /data/local/tmp/mihomo-kdgp4final >/dev/null
 	$ADB push "$ROOT/tools/kdgctl" /data/local/tmp/kdgctl >/dev/null
 	$ADB push "$PEM_HOST" /data/local/tmp/kdg_root.pem >/dev/null
-	for f in apply.sh watch.sh boot.sh disable.sh enable-now.sh start-watch.sh loop.sh; do
+	$ADB push "$ROOT/deploy/edns-rules.yaml" /data/local/tmp/edns-rules.yaml >/dev/null
+	for f in apply.sh watch.sh boot.sh disable.sh enable-now.sh start-watch.sh loop.sh swap-ko.sh; do
 		$ADB push "$ROOT/deploy/$f" /data/local/tmp/kdg-$f >/dev/null
 	done
-	$ADB shell su -c "cp /data/local/tmp/kdnsguard.ko $KDG/kdnsguard.ko; cp /data/local/tmp/mihomo-kdgp4final $KDG/mihomo-kdgp4final; cp /data/local/tmp/kdgctl $KDG/kdgctl; cp /data/local/tmp/kdg_root.pem $KDG/kdg_root.pem; cp /data/local/tmp/kdg-apply.sh $KDG/apply.sh; cp /data/local/tmp/kdg-watch.sh $KDG/watch.sh; cp /data/local/tmp/kdg-boot.sh $KDG/boot.sh; cp /data/local/tmp/kdg-disable.sh $KDG/disable.sh; cp /data/local/tmp/kdg-enable-now.sh $KDG/enable-now.sh; cp /data/local/tmp/kdg-start-watch.sh $KDG/start-watch.sh; cp /data/local/tmp/kdg-loop.sh $KDG/loop.sh; chmod 755 $KDG/*.sh $KDG/kdgctl $KDG/mihomo-kdgp4final; chmod 644 $KDG/kdnsguard.ko $KDG/kdg_root.pem; test -f $KDG/mihomo.stock || cp -a $B/bin/mihomo $KDG/mihomo.stock; test -f $KDG/startup-config.stock || cp -a $B/run/state/startup-config $KDG/startup-config.stock; cp $KDG/boot.sh /data/adb/service.d/99-kdnsguard.sh; chmod 755 /data/adb/service.d/99-kdnsguard.sh; touch $KDG/enabled"
+	$ADB shell su -c "cp /data/local/tmp/kdnsguard.ko $KDG/kdnsguard.ko; cp /data/local/tmp/mihomo-kdgp4final $KDG/mihomo-kdgp4final; cp /data/local/tmp/kdgctl $KDG/kdgctl; cp /data/local/tmp/kdg_root.pem $KDG/kdg_root.pem; cp /data/local/tmp/kdg-apply.sh $KDG/apply.sh; cp /data/local/tmp/kdg-watch.sh $KDG/watch.sh; cp /data/local/tmp/kdg-boot.sh $KDG/boot.sh; cp /data/local/tmp/kdg-disable.sh $KDG/disable.sh; cp /data/local/tmp/kdg-enable-now.sh $KDG/enable-now.sh; cp /data/local/tmp/kdg-start-watch.sh $KDG/start-watch.sh; cp /data/local/tmp/kdg-loop.sh $KDG/loop.sh; cp /data/local/tmp/kdg-swap-ko.sh $KDG/swap-ko.sh; cp /data/local/tmp/edns-rules.yaml $KDG/edns-rules.yaml; chmod 755 $KDG/*.sh $KDG/kdgctl $KDG/mihomo-kdgp4final; chmod 644 $KDG/kdnsguard.ko $KDG/kdg_root.pem; test -f $KDG/mihomo.stock || cp -a $B/bin/mihomo $KDG/mihomo.stock; test -f $KDG/startup-config.stock || cp -a $B/run/state/startup-config $KDG/startup-config.stock; cp $KDG/boot.sh /data/adb/service.d/99-kdnsguard.sh; chmod 755 /data/adb/service.d/99-kdnsguard.sh; touch $KDG/enabled"
 	echo "资产已落 $KDG"
 fi
 

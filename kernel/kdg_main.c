@@ -106,11 +106,17 @@ static int kdg_net_init(struct net *net)
 		pr_err("netns NAT 注册失败: %d（该 netns 不接管，其余功能不受影响）\n",
 		       ret);
 	}
+	ret = kdg_edns_register(net);
+	if (ret) {
+		ns->degraded = true;
+		pr_err("netns 加密 DNS 封锁注册失败: %d\n", ret);
+	}
 	return 0;
 }
 
 static void kdg_net_exit(struct net *net)
 {
+	kdg_edns_unregister(net);
 	kdg_nat_unregister(net);
 }
 
@@ -126,6 +132,14 @@ static struct pernet_operations kdg_net_ops = {
 static int __init kdg_init(void)
 {
 	int ret;
+
+	/* 名单须在 hook 注册（pernet init）之前就绪；默认串是编译期常量，
+	 * 解析失败只可能是代码缺陷，按失败处理。 */
+	ret = kdg_edns_init();
+	if (ret) {
+		pr_err("加密 DNS 默认名单解析失败: %d\n", ret);
+		return ret;
+	}
 
 	ret = kdg_listener_init_state();
 	if (ret)

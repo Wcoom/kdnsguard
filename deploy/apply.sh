@@ -20,6 +20,7 @@ need_patch() {
 	grep -q '^  backend: kernel$' "$CFG" || return 0
 	grep -q '^  dns-mode: off$' "$CFG" || return 0
 	grep -q '^  enhanced-mode: fake-ip$' "$CFG" && return 0
+	[ -f "$KDG/edns-rules.yaml" ] && ! grep -q '^- DST-PORT,853,REJECT$' "$CFG" && return 0
 	return 1
 }
 
@@ -84,6 +85,15 @@ patch_yaml() {
 		log "补丁后仍无 backend: kernel，放弃"
 		rm -f "$CFG.kdgnew" "$CFG.kdgnew2"
 		return 1
+	fi
+	# 加密 DNS 封锁（代理侧）：被 eBPF 改写进 mihomo 的连接不经过 netfilter，
+	# 内核 kdg_edns 看不到，只能在规则最前面 REJECT。哨兵行保证幂等。
+	if [ -f "$KDG/edns-rules.yaml" ] && ! grep -q '^- DST-PORT,853,REJECT$' "$CFG.kdgnew"; then
+		$BB awk -v f="$KDG/edns-rules.yaml" '
+			{ print }
+			/^rules:$/ && !done { while ((getline l < f) > 0) print l; done=1 }
+		' "$CFG.kdgnew" > "$CFG.kdgnew2" && mv "$CFG.kdgnew2" "$CFG.kdgnew"
+		grep -q '^- DST-PORT,853,REJECT$' "$CFG.kdgnew" || log "edns 规则未插入（无 rules: 段）"
 	fi
 	mv "$CFG.kdgnew" "$CFG"
 	chmod 600 "$CFG"

@@ -81,6 +81,8 @@ struct kdg_nat_stats {
 	atomic64_t fwd_seen;	/* 其中 PREROUTING（转发/共享网络）路径的 */
 	atomic64_t fwd_bypassed;	/* 转发了但入口接口不在客户端入口表里 */
 	atomic64_t sport53;	/* 源端口是 53 的新连接（**不**接管，仅计数） */
+	atomic64_t edns_dot;	/* 拒绝的 853（DoT/DoQ） */
+	atomic64_t edns_doh;	/* 拒绝的名单内 443（DoH/DoH3） */
 };
 
 /* ── per-netns 状态 ───────────────────────────────────────────────────── */
@@ -88,6 +90,7 @@ struct kdg_netns {
 	struct kdg_nat_stats nat;
 	bool nat_registered_v4;
 	bool nat_registered_v6;
+	bool edns_registered;	/* 加密 DNS 封锁 hook（kdg_edns.c） */
 	bool degraded;		/* 注册失败过；GET_HEALTH 如实上报 */
 	/* 域名 -> IP 映射表、缓存、在途表在后续阶段加入，此处留位。 */
 };
@@ -126,6 +129,11 @@ struct kdg_netns *kdg_netns_of(struct net *net);
 int kdg_nat_register(struct net *net);
 void kdg_nat_unregister(struct net *net);
 u32 kdg_nat_capability_bits(void);
+
+/* kdg_edns.c */
+int kdg_edns_init(void);
+int kdg_edns_register(struct net *net);
+void kdg_edns_unregister(struct net *net);
 
 /*
  * 一个 IPv6 地址是否**全局** scope（参数是 16 字节裸地址）。
