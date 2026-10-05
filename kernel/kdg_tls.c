@@ -192,6 +192,8 @@ static unsigned int kdg_tls_ca_count_locked(void)
 
 static void kdg_tls_clear_ca_locked(void);
 
+static bool kdg_tls_ca_has_locked(const mbedtls_x509_crt *c);
+
 int kdg_tls_add_ca(const u8 *data, size_t len)
 {
 	unsigned int before, after;
@@ -224,25 +226,72 @@ int kdg_tls_add_ca(const u8 *data, size_t len)
 	 * 表示全部成功；返回正数表示有 N 张解析失败但仍追加了其余部分 ——
 	 * 后者必须当成失败处理：带着残缺的信任锚去握手，等于把安全性
 	 * 建立在「恰好没被解析到的那张不是关键」这个没有根据的假设上。 */
-	kdg_tls_lock();
-	before = kdg_tls_ca_count_locked();
-	ret = mbedtls_x509_crt_parse(&kdg_ca, buf, len + 1);
-	after = kdg_tls_ca_count_locked();
-	kfree(buf);
+	/*
+	 * 先解到临时链，再只把**链里还没有的**追加进去。
+	 *
+	 * 为什么要去重：信任锚是用户空间每次启动时加载的（mihomo 的
+	 * kernel-trust-file），而常驻部署里 mihomo 会因配置补丁反复重启 ——
+	 * 每次重启都往同一条静态链上再追加一份同样的根证书。真机实测三次重载
+	 * 后「累计 3 张」。重复的根证书不削弱安全性，但会无界增长（每张约
+	 * 1–2 KiB 加若干分配），且让验证多走无用分支。
+	 */
+	{
+		mbedtls_x509_crt *tmp = kzalloc(sizeof(*tmp), GFP_KERNEL);
+		mbedtls_x509_crt *c;
 
-	if (ret != 0) {
-		pr_err("信任锚解析有失败项（%d 张），拒绝本次加载\n",
-		       ret);
-		/* 已追加的部分无法单张摘除，只能整体作废，避免留下未知状态。 */
-		kdg_tls_clear_ca_locked();
+		if (!tmp) {
+			kfree(buf);
+			return -ENOMEM;
+		}
+		mbedtls_x509_crt_init(tmp);
+		ret = mbedtls_x509_crt_parse(tmp, buf, len + 1);
+		kfree(buf);
+		if (ret != 0) {
+			pr_err("信任锚解析有失败项（%d 张），拒绝本次加载\n", ret);
+			mbedtls_x509_crt_free(tmp);
+			kfree(tmp);
+			return -EINVAL;
+		}
+		kdg_tls_lock();
+		before = kdg_tls_ca_count_locked();
+		for (c = tmp; c; c = c->next) {
+			if (kdg_tls_ca_has_locked(c))
+				continue;
+			if (mbedtls_x509_crt_parse_der(&kdg_ca, c->raw.p,
+						       c->raw.len)) {
+				ret = -EINVAL;
+				break;
+			}
+		}
+		after = kdg_tls_ca_count_locked();
 		kdg_tls_unlock();
-		return -EINVAL;
+		mbedtls_x509_crt_free(tmp);
+		kfree(tmp);
+		if (ret) {
+			pr_err("信任锚追加失败\n");
+			return -EINVAL;
+		}
 	}
-	kdg_tls_unlock();
-	if (after == before)
-		return -EINVAL;
+
 	WRITE_ONCE(kdg_ca_count, after);
+	/* 返回本次**新增**张数；全部是重复时返回 0（调用方据此区分「没变」） */
 	return (int)(after - before);
+}
+
+/* 链中是否已有同一张证书（按原始 DER 逐字节比）。持锁调用。 */
+static bool kdg_tls_ca_has_locked(const mbedtls_x509_crt *c)
+{
+	const mbedtls_x509_crt *it;
+
+	if (!kdg_ca_created)
+		return false;
+	for (it = &kdg_ca; it; it = it->next) {
+		if (!it->raw.p || it->raw.len != c->raw.len)
+			continue;
+		if (!memcmp(it->raw.p, c->raw.p, c->raw.len))
+			return true;
+	}
+	return false;
 }
 
 unsigned int kdg_tls_ca_count(void)
