@@ -69,8 +69,12 @@ static int kdg_tls_rng(void *ctx, unsigned char *out, size_t len)
 {
 	int ret;
 
+	/* ctx 是本模块内部的 DRBG 句柄；传 NULL 时退回唯一那个全局实例。
+	 * ⚠️ 不能让 NULL 落到 mbedtls_ctr_drbg_random 里 —— 那是一次空指针
+	 * 解引用，在设备上表现为 kdg_pool 线程 panic 重启（2026-10-05 真机
+	 * 取证的正是这条：kdg_tls_rng_export → mbedtls_ctr_drbg_random）。 */
 	mutex_lock(&kdg_rng_mutex);
-	ret = mbedtls_ctr_drbg_random(ctx, out, len);
+	ret = mbedtls_ctr_drbg_random(ctx ? ctx : &kdg_ctr_drbg, out, len);
 	mutex_unlock(&kdg_rng_mutex);
 	return ret;
 }
@@ -259,6 +263,26 @@ static void kdg_tls_clear_ca_locked(void)
 	mbedtls_x509_crt_free(&kdg_ca);
 	mbedtls_x509_crt_init(&kdg_ca);
 	WRITE_ONCE(kdg_ca_count, 0);
+}
+
+/*
+ * 给 QUIC/TLS1.3 引擎的随机数入口。
+ *
+ * ⚠️ **不要把它当成「带上下文的回调」**：本模块只有一个 DRBG，调用方传进来
+ * 的 ctx 没有任何意义。第一版原样转手给 mbedtls_ctr_drbg_random，而
+ * kdg_h3_init 传的是 NULL —— 真机上每次 H3 建连都会在 kdg_pool 线程里空指针
+ * 解引用（minidump: lr = kdg_tls_rng_export+0x48 → mbedtls_ctr_drbg_random）。
+ * 现在固定使用全局实例，这个类别的问题从构造上消失。
+ */
+int kdg_tls_rng_export(void *ctx, unsigned char *out, size_t len)
+{
+	(void)ctx;
+	return kdg_tls_rng(&kdg_ctr_drbg, out, len);
+}
+
+const struct mbedtls_x509_crt *kdg_tls_ca_chain(void)
+{
+	return kdg_ca_count ? &kdg_ca : NULL;
 }
 
 void kdg_tls_clear_ca(void)

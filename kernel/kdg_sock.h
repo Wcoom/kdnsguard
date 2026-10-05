@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * kdg_sock.h —— 内核态 TCP socket 薄封装（阻塞式，带超时）。
+ * kdg_sock.h —— 内核态 socket 薄封装（阻塞式，带超时；TCP 与 UDP）。
  *
  * 设计取舍：
  *  - **阻塞式**而不是事件驱动。方案 §6.2 要求在「可睡眠的 kernel worker 上
@@ -31,6 +31,9 @@ struct kdg_sock {
 
 /* 创建 TCP socket（内核态、init_net）。返回 0 或负 errno。 */
 int kdg_sock_open(struct kdg_sock *ks);
+
+/* 创建 UDP socket（QUIC 用）。connect4/send/recv/close 与 TCP 路径共用。 */
+int kdg_sock_open_udp(struct kdg_sock *ks);
 
 /* 设置收发超时（毫秒）。会同时作用于后续的 connect/send/recv。 */
 void kdg_sock_set_timeout(struct kdg_sock *ks, u32 timeout_ms);

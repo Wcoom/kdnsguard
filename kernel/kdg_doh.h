@@ -25,6 +25,8 @@ struct kdg_doh_cfg {
 	u32	ip_be;		/* bootstrap IPv4，网络字节序 */
 	u16	port_be;	/* 端口，网络字节序 */
 	u32	deadline_ms;
+	/* 优先试 HTTP/3（QUIC）；失败或未启用则回落 H2。由模块参数控制。 */
+	bool	allow_h3;
 };
 
 /* 用编入设备的默认端点填充 cfg（方案 §6.1）。 */

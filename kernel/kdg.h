@@ -121,6 +121,9 @@ extern struct kdg_config_snapshot kdg_cfg;
  * 打印 pf/协议/端口，用于定位「hook 挂了但谓词不匹配」这类问题。 */
 extern bool kdg_debug;
 
+/* 是否优先用 HTTP/3（QUIC）连上游，失败回落 H2。模块参数 h3，默认开。 */
+extern bool kdg_allow_h3;
+
 /* kdg_main.c */
 int kdg_netns_id(void);
 struct kdg_netns *kdg_netns_of(struct net *net);

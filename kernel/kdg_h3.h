@@ -69,27 +69,19 @@ enum kdg_h3_req_state {
 
 #define KDG_H3_HDR_MAX	8192	/* HEADERS 载荷上限（对端声明的字段段上限 8 KB） */
 
-/* 一条请求流上的增量帧解析状态。
- * ⚠️ 必须能跨多次 feed：一次 TCP/QUIC 交付只给出帧的一部分是常态。 */
-struct kdg_h3_req {
-	enum kdg_h3_req_state state;
-	u64 sid;
-	bool fin;
-	/* 帧头解析：varint 分两段（类型、长度），字节可能拆在两次 feed 里 */
-	u8 stage;		/* 0=读类型 1=读长度 2=读载荷 3=跳过载荷 */
+/*
+ * 帧解析状态。**刻意做小**：它会被每条单向流、每条请求流各持一份，
+ * 而内核里这份状态的每一字节都是常驻内存。载荷缓冲不在这里 ——
+ * 需要完整载荷的帧（HEADERS/GOAWAY）另有去处，见 kdg_h3_req。
+ */
+struct kdg_h3_parser {
+	u8 stage;		/* 0=读类型 1=读长度 2=收载荷 3=DATA 4=丢弃 */
 	u8 vbuf[8];		/* 正在拼的 varint */
 	u8 vlen, vneed;
 	u64 ftype, frem;
-	bool is_control;	/* 这个解析状态属于对端控制流（帧类型集不同） */
-	/* HEADERS/GOAWAY 载荷需要完整拿到才能处理 */
-	u8 hbuf[KDG_H3_HDR_MAX];
-	size_t hlen;
-	/* 响应 */
-	bool got_headers;
-	int status;
-	u8 body[KDG_H3_BODY_MAX];
-	size_t body_len;
-	int err;		/* 失败原因（负 errno 或 H3E_* 错误码） */
+	bool is_control;
+	u8 pbuf[16];		/* 小载荷（GOAWAY 的 stream id 等） */
+	size_t plen;
 };
 
 #define KDG_H3_UNI_MAX	3	/* 控制流 + QPACK 编/解码流 */
@@ -101,7 +93,23 @@ struct kdg_h3_uni {
 	u64 type;
 	u8 tbuf[8];
 	u8 tlen, tneed;
-	struct kdg_h3_req fr;		/* 复用请求流的帧解析状态机 */
+	struct kdg_h3_parser fp;
+};
+
+/* 一条请求流。body 按需分配（一条在途请求才占一份），完成后释放。 */
+struct kdg_h3_req {
+	enum kdg_h3_req_state state;
+	u64 sid;
+	bool fin;
+	struct kdg_h3_parser fp;
+	u8 hbuf[KDG_H3_HDR_MAX];
+	size_t hlen;
+	u8 *body;
+	size_t body_len, body_cap;
+	bool got_headers;
+	bool ct_ok;		/* content-type 是 application/dns-message */
+	int status;
+	int err;		/* 失败原因（负 errno 或 H3E_* 错误码） */
 };
 
 struct kdg_h3 {
@@ -138,8 +146,17 @@ struct kdg_h3_req *kdg_h3_req_at(struct kdg_h3 *h, size_t i);
 /* 连接是否可再发请求（握手完成且未收到 GOAWAY） */
 bool kdg_h3_ready(const struct kdg_h3 *h);
 
-/* 内部：把流上的字节喂给 H3 帧解析（测试直接调用它，跳过 QUIC 层）。 */
-int kdg_h3_feed(struct kdg_h3 *h, struct kdg_h3_req *r, const u8 *data,
-		size_t len, bool fin);
+/*
+ * 内部：把流上的字节喂给 H3 帧解析（测试直接调用它，跳过 QUIC 层）。
+ * r 为 NULL 表示对端控制流（帧类型集与请求流不同）。
+ * 测试用 kdg_h3_req_init 准备请求流状态。
+ */
+int kdg_h3_feed(struct kdg_h3 *h, struct kdg_h3_parser *fp,
+		struct kdg_h3_req *r, const u8 *data, size_t len, bool fin);
+
+/* 初始化一条请求流的解析状态（不分配 body）。 */
+void kdg_h3_req_init(struct kdg_h3_req *r, u64 sid);
+/* 释放该请求占的资源并复位槽位（幂等；完成后由消费方调用）。 */
+void kdg_h3_req_release(struct kdg_h3_req *r);
 
 #endif

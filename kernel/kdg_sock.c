@@ -60,6 +60,27 @@ int kdg_sock_open(struct kdg_sock *ks)
 	return 0;
 }
 
+int kdg_sock_open_udp(struct kdg_sock *ks)
+{
+	struct socket *sock = NULL;
+	int ret;
+
+	if (!ks)
+		return -EINVAL;
+	memset(ks, 0, sizeof(*ks));
+	ks->timeout_ms = KDG_SOCK_DEFAULT_TIMEOUT_MS;
+	ret = sock_create_kern(&init_net, AF_INET, SOCK_DGRAM, IPPROTO_UDP,
+			       &sock);
+	if (ret) {
+		ks->last_errno = ret;
+		return ret;
+	}
+	ks->sock = sock;
+	kdg_sock_set_timeout(ks, ks->timeout_ms);
+	sock->sk->sk_allocation = GFP_KERNEL;
+	return 0;
+}
+
 void kdg_sock_set_timeout(struct kdg_sock *ks, u32 timeout_ms)
 {
 	if (!ks || !ks->sock || !ks->sock->sk)

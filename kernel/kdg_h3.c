@@ -7,10 +7,24 @@
  */
 #include "kdg_h3.h"
 
-#ifndef __KERNEL__
+/* 宿主排障用的最小跟踪；内核构建下展开为空。 */
+#ifdef KDG_H3_TRACE
+#define H3_TRACE(...) fprintf(stderr, "[h3] " __VA_ARGS__)
+#else
+#define H3_TRACE(...) do { } while (0)
+#endif
+
+#ifdef __KERNEL__
+#include <linux/slab.h>
+#include <linux/mm.h>
+#define h3_alloc(n)	kvmalloc((n), GFP_KERNEL)
+#define h3_free(p)	kvfree(p)
+#else
 #include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
+#define h3_alloc(n)	malloc(n)
+#define h3_free(p)	free(p)
 #endif
 
 static struct kdg_h3_req *h3_slot_of(struct kdg_h3 *h, u64 sid)
@@ -41,140 +55,188 @@ static struct kdg_h3_req *h3_slot_new(struct kdg_h3 *h, u64 sid)
 
 /* ── 帧解析：增量状态机，可跨多次 feed ───────────────────────────── */
 /* 只处理请求流（响应）与控制流（SETTINGS/GOAWAY）。 */
-static int h3_frame(struct kdg_h3 *h, struct kdg_h3_req *r, u64 type, u64 len,
-		    const u8 *p);
+static int h3_frame(struct kdg_h3 *h, struct kdg_h3_parser *fp,
+		    struct kdg_h3_req *r, u64 type, u64 len, const u8 *p);
 
 /* 拼一个 varint：返回 1 完成、0 还需更多字节、负值为编码错误。 */
-static int h3_varint(struct kdg_h3_req *r, const u8 **in, size_t *left,
-		     u64 *out);
+static int h3_varint(struct kdg_h3_parser *fp, const u8 **in, size_t *left,
+		     u64 *out)
+{
+	u8 first;
+
+	if (!fp->vlen) {
+		if (!*left)
+			return 0;
+		first = **in;
+		fp->vneed = (u8)(1u << (first >> 6));
+		if (fp->vneed > sizeof(fp->vbuf))
+			return -H3E_FRAME_ERROR;
+	}
+	while (fp->vlen < fp->vneed && *left) {
+		fp->vbuf[fp->vlen++] = **in;
+		(*in)++;
+		(*left)--;
+	}
+	if (fp->vlen < fp->vneed)
+		return 0;
+	{
+		unsigned i;
+		u64 v = fp->vbuf[0] & 0x3f;
+
+		for (i = 1; i < fp->vneed; i++)
+			v = v << 8 | fp->vbuf[i];
+		*out = v;
+	}
+	fp->vlen = 0;
+	fp->vneed = 0;
+	return 1;
+}
+
+void kdg_h3_req_init(struct kdg_h3_req *r, u64 sid)
+{
+	memset(r, 0, sizeof(*r));
+	r->sid = sid;
+	r->state = H3R_OPEN;
+}
+
+void kdg_h3_req_release(struct kdg_h3_req *r)
+{
+	h3_free(r->body);
+	memset(r, 0, sizeof(*r));
+	r->state = H3R_IDLE;
+}
 
 /*
- * 增量帧解析。
+ * 增量帧解析（状态在 fp 里，载荷去向按帧类型定）。
  *   阶段 0/1：读帧类型、帧长度（可能被拆在多次 feed 里）
- *   阶段 2：载荷收进 hbuf（只有 HEADERS 与 GOAWAY 需要完整载荷）
+ *   阶段 2：载荷收进 r->hbuf（HEADERS，请求流）或 fp->pbuf（GOAWAY，控制流）
  *   阶段 3：DATA 载荷逐段追加到 body（请求流）
  *   阶段 4：其余帧类型的载荷直接丢弃（RFC 9114 §9：未知帧必须被忽略）
  */
-int kdg_h3_feed(struct kdg_h3 *h, struct kdg_h3_req *r, const u8 *data,
-		size_t len, bool fin)
+int kdg_h3_feed(struct kdg_h3 *h, struct kdg_h3_parser *fp,
+		struct kdg_h3_req *r, const u8 *data, size_t len, bool fin)
 {
 	const u8 *p = data;
 	size_t left = len;
 	int ret;
 
-	if (!r)
+	if (!fp || (!r && !fp->is_control))
 		return -EINVAL;
 	for (;;) {
-		if (r->stage <= 1) {
+		if (fp->stage <= 1) {
 			u64 v;
-			int rc = h3_varint(r, &p, &left, &v);
+			int rc = h3_varint(fp, &p, &left, &v);
 
 			if (rc < 0)
 				return rc;
 			if (!rc)
 				break;
-			if (r->stage == 0) {
-				r->ftype = v;
-				r->stage = 1;
+			if (fp->stage == 0) {
+				fp->ftype = v;
+				fp->stage = 1;
 			} else {
-				r->frem = v;
-				if (r->ftype == H3F_HEADERS) {
+				fp->frem = v;
+				if (fp->ftype == H3F_HEADERS) {
+					if (fp->is_control)	/* 控制流不得有 HEADERS */
+						return -H3E_FRAME_UNEXPECTED;
 					if (v > KDG_H3_HDR_MAX)
 						return -H3E_EXCESSIVE_LOAD;
-					r->stage = 2;
-					r->hlen = 0;
-				} else if (r->ftype == H3F_GOAWAY) {
-					if (v > 8)
+					fp->stage = 2;
+					fp->plen = 0;
+				} else if (fp->ftype == H3F_GOAWAY) {
+					if (v > sizeof(fp->pbuf))
 						return -H3E_FRAME_ERROR;
-					r->stage = 2;
-					r->hlen = 0;
-				} else if (r->ftype == H3F_DATA) {
-					if (r->is_control)
+					fp->stage = 2;
+					fp->plen = 0;
+				} else if (fp->ftype == H3F_DATA) {
+					if (fp->is_control)
 						return -H3E_FRAME_UNEXPECTED;
-					r->stage = 3;
-				} else if (r->is_control && r->ftype != H3F_SETTINGS &&
-					   r->ftype != H3F_MAX_PUSH_ID &&
-					   r->ftype != H3F_CANCEL_PUSH) {
+					fp->stage = 3;
+				} else if (fp->is_control && fp->ftype != H3F_SETTINGS &&
+					   fp->ftype != H3F_MAX_PUSH_ID &&
+					   fp->ftype != H3F_CANCEL_PUSH) {
 					return -H3E_FRAME_UNEXPECTED;
-				} else if (!r->is_control &&
-					   (r->ftype == H3F_PUSH_PROMISE ||
-					    r->ftype == H3F_CANCEL_PUSH ||
-					    r->ftype == H3F_MAX_PUSH_ID)) {
+				} else if (!fp->is_control &&
+					   (fp->ftype == H3F_PUSH_PROMISE ||
+					    fp->ftype == H3F_CANCEL_PUSH ||
+					    fp->ftype == H3F_MAX_PUSH_ID)) {
 					/* 我们从不发 MAX_PUSH_ID，所以任何推送相关帧都是
-					 * ID_ERROR（§7.2.3 / §7.2.5），不能当未知帧忽略 ——
-					 * 忽略会让「服务器擅自推送」无声通过。 */
+					 * ID_ERROR（§7.2.3 / §7.2.5），不能当未知帧忽略。 */
 					return -H3E_ID_ERROR;
 				} else {
-					r->stage = 4;
+					fp->stage = 4;
 				}
 			}
 			continue;
 		}
-		if (r->stage == 2) {
-			size_t take = left < r->frem ? left : (size_t)r->frem;
+		if (fp->stage == 2) {
+			size_t take = left < fp->frem ? left : (size_t)fp->frem;
+			u8 *dst = r ? r->hbuf + r->hlen : fp->pbuf + fp->plen;
 
-			memcpy(r->hbuf + r->hlen, p, take);
-			r->hlen += take;
+			memcpy(dst, p, take);
+			if (r)
+				r->hlen += take;
+			else
+				fp->plen += take;
 			p += take;
 			left -= take;
-			r->frem -= take;
-			if (r->frem) {
+			fp->frem -= take;
+			if (fp->frem) {
 				if (!left)
 					break;
 				continue;
 			}
-			ret = h3_frame(h, r, r->ftype, r->hlen, r->hbuf);
+			ret = h3_frame(h, fp, r, fp->ftype,
+				       r ? r->hlen : fp->plen,
+				       r ? r->hbuf : fp->pbuf);
 			if (ret)
 				return ret;
-			r->stage = 0;
+			fp->stage = 0;
 			continue;
 		}
-		if (r->stage == 3) {
-			size_t take = left < r->frem ? left : (size_t)r->frem;
+		if (fp->stage == 3) {
+			size_t take = left < fp->frem ? left : (size_t)fp->frem;
 
-			if (!r->got_headers)
+			if (!r || !r->got_headers)
 				return -H3E_FRAME_UNEXPECTED;	/* DATA 在 HEADERS 前 */
-			if (r->body_len + take > KDG_H3_BODY_MAX)
+			if (!r->body)
+				return -H3E_INTERNAL;
+			if (r->body_len + take > r->body_cap)
 				return -H3E_EXCESSIVE_LOAD;
 			memcpy(r->body + r->body_len, p, take);
 			r->body_len += take;
 			p += take;
 			left -= take;
-			r->frem -= take;
-			if (r->frem) {
+			fp->frem -= take;
+			if (fp->frem) {
 				if (!left)
 					break;
 				continue;
 			}
-			r->stage = 0;
+			fp->stage = 0;
 			continue;
 		}
 		/* 阶段 4：丢弃 */
 		{
-			size_t take = left < r->frem ? left : (size_t)r->frem;
+			size_t take = left < fp->frem ? left : (size_t)fp->frem;
 
 			p += take;
 			left -= take;
-			r->frem -= take;
-			if (r->frem) {
+			fp->frem -= take;
+			if (fp->frem) {
 				if (!left)
 					break;
 				continue;
 			}
-			if (r->is_control && r->ftype == H3F_SETTINGS)
-				ret = 0;	/* 接受，不做协商 */
-			else
-				ret = 0;
-			(void)ret;
-			r->stage = 0;
+			fp->stage = 0;
 		}
 	}
 	if (fin) {
-		if (r->is_control)
+		if (fp->is_control)
 			return -H3E_CLOSED_CRITICAL;	/* 控制流不得 FIN */
-		if (r->stage != 0)
+		if (fp->stage != 0)
 			return -H3E_FRAME_ERROR;	/* 帧未收全就 FIN */
-		if (!r->got_headers)
+		if (!r || !r->got_headers)
 			return -H3E_REQUEST_INCOMPLETE;
 		if (r->body_len < 12)
 			return -H3E_MESSAGE_ERROR;	/* DNS 报文至少 12 字节头 */
@@ -183,53 +245,13 @@ int kdg_h3_feed(struct kdg_h3 *h, struct kdg_h3_req *r, const u8 *data,
 	}
 	return 0;
 }
-/* 拼一个 varint：返回 1 完成、0 还需更多字节、负值为编码错误。 */
-static int h3_varint(struct kdg_h3_req *r, const u8 **in, size_t *left,
-		     u64 *out)
+
+static int h3_frame(struct kdg_h3 *h, struct kdg_h3_parser *fp,
+		    struct kdg_h3_req *r, u64 type, u64 len, const u8 *p)
 {
-	u8 first;
-
-	if (!r->vlen) {
-		if (!*left)
-			return 0;
-		first = **in;
-		r->vneed = (u8)(1u << (first >> 6));
-		if (r->vneed > sizeof(r->vbuf))
-			return -H3E_FRAME_ERROR;
-	}
-	while (r->vlen < r->vneed && *left) {
-		r->vbuf[r->vlen++] = **in;
-		(*in)++;
-		(*left)--;
-	}
-	if (r->vlen < r->vneed)
-		return 0;
-	{
-		unsigned i;
-		u64 v = r->vbuf[0] & 0x3f;
-
-		for (i = 1; i < r->vneed; i++)
-			v = v << 8 | r->vbuf[i];
-		*out = v;
-	}
-	r->vlen = 0;
-	r->vneed = 0;
-	return 1;
-}
-
-
-#ifdef KDG_H3_TRACE
-#define H3_TRACE(...) fprintf(stderr, "[h3] " __VA_ARGS__)
-#else
-#define H3_TRACE(...) do { } while (0)
-#endif
-
-static int h3_frame(struct kdg_h3 *h, struct kdg_h3_req *r, u64 type, u64 len,
-		    const u8 *p)
-{
-	H3_TRACE("frame ctl=%d type=%llu len=%llu\n", r->is_control,
+	H3_TRACE("frame ctl=%d type=%llu len=%llu\n", fp->is_control,
 		 (unsigned long long)type, (unsigned long long)len);
-	if (r->is_control) {
+	if (fp->is_control) {
 		if (type == H3F_SETTINGS)
 			return 0;	/* 接受，不做协商 */
 		if (type == H3F_GOAWAY) {
@@ -246,6 +268,8 @@ static int h3_frame(struct kdg_h3 *h, struct kdg_h3_req *r, u64 type, u64 len,
 		}
 		return -H3E_FRAME_UNEXPECTED;
 	}
+	if (!r)
+		return -H3E_INTERNAL;
 	switch (type) {
 	case H3F_HEADERS: {
 		const struct kdg_qpack_field *st;
@@ -264,25 +288,30 @@ static int h3_frame(struct kdg_h3 *h, struct kdg_h3_req *r, u64 type, u64 len,
 			return -H3E_MESSAGE_ERROR;
 		r->status = (st->val[0] - '0') * 100 + (st->val[1] - '0') * 10 +
 			    (st->val[2] - '0');
+		{
+			static const char want[] = "application/dns-message";
+			const struct kdg_qpack_field *ct =
+				kdg_qpack_find(h->fields, h->dec.nfields,
+					       "content-type");
+
+			r->ct_ok = ct && ct->val_len == sizeof(want) - 1 &&
+				   !memcmp(ct->val, want, sizeof(want) - 1);
+		}
 		r->got_headers = true;
 		return 0;
 	}
 	case H3F_DATA:
+		/* DATA 的载荷由 feed 逐段写进 body，这里不该被调用 */
 		if (!r->got_headers)
-			return -H3E_FRAME_UNEXPECTED;	/* DATA 必须在 HEADERS 之后 */
-		if (r->body_len + len > KDG_H3_BODY_MAX)
-			return -H3E_EXCESSIVE_LOAD;
-		memcpy(r->body + r->body_len, p, (size_t)len);
-		r->body_len += (size_t)len;
+			return -H3E_FRAME_UNEXPECTED;
 		return 0;
 	case H3F_PUSH_PROMISE:
-		return -H3E_ID_ERROR;		/* 我们 MAX_PUSH_ID=0，不许推送 */
+		return -H3E_ID_ERROR;
 	default:
 		return -H3E_FRAME_UNEXPECTED;
 	}
 }
 
-/* ── 对端单向流：先读流类型，再按帧解析 ───────────────────────────── */
 static struct kdg_h3_uni *h3_uni_of(struct kdg_h3 *h, u64 id, bool create)
 {
 	size_t i;
@@ -296,7 +325,7 @@ static struct kdg_h3_uni *h3_uni_of(struct kdg_h3 *h, u64 id, bool create)
 		if (!h->uni[i].id) {
 			memset(&h->uni[i], 0, sizeof(h->uni[i]));
 			h->uni[i].id = id;
-			h->uni[i].fr.is_control = true;
+			h->uni[i].fp.is_control = true;
 			return &h->uni[i];
 		}
 	}
@@ -341,7 +370,7 @@ static int h3_uni_feed(struct kdg_h3 *h, struct kdg_h3_uni *u, const u8 *data,
 	}
 	if (u->type != H3S_CONTROL)
 		return 0;		/* QPACK/推送流：丢弃字节即可 */
-	return kdg_h3_feed(h, &u->fr, p, left, false);
+	return kdg_h3_feed(h, &u->fp, NULL, p, left, false);
 }
 
 /* ── 连接与控制流 ─────────────────────────────────────────────────── */
@@ -427,6 +456,11 @@ int kdg_h3_init(struct kdg_h3 *h, const char *host, const char *alpn,
 
 void kdg_h3_fini(struct kdg_h3 *h)
 {
+	size_t i;
+
+	for (i = 0; i < KDG_H3_RSTATES; i++)
+		if (h->req[i].state != H3R_IDLE)
+			kdg_h3_req_release(&h->req[i]);
 	kdg_qc_fini(&h->qc);
 }
 
@@ -463,6 +497,15 @@ int kdg_h3_post(struct kdg_h3 *h, const char *path, const u8 *body,
 	r = h3_slot_new(h, (u64)sid);
 	if (!r)
 		return -ENOSPC;
+	/* 请求体按需分配：并发只发生在真正在途的请求上，空闲槽位不占 64 KiB。
+	 * 用 kvmalloc：这块 64 KiB 常在大块分配里失败。 */
+	r->body = h3_alloc(KDG_H3_BODY_MAX);
+	if (!r->body) {
+		kdg_h3_req_release(r);
+		kdg_qc_stream_free(&h->qc, (u64)sid);
+		return -ENOMEM;
+	}
+	r->body_cap = KDG_H3_BODY_MAX;
 	/* HEADERS（不以 FIN 结束，后面还有 DATA），再 DATA，最后带 FIN 收尾 */
 	w = kdg_qv_put(buf + o, sizeof(buf) - o, H3F_HEADERS);
 	if (!w)
@@ -531,7 +574,7 @@ static void h3_pump_streams(struct kdg_h3 *h)
 					break;
 				}
 			} else {
-				int ret = kdg_h3_feed(h, r, tmp, (size_t)n, fin);
+				int ret = kdg_h3_feed(h, &r->fp, r, tmp, (size_t)n, fin);
 
 				if (ret) {
 					r->state = H3R_FAILED;

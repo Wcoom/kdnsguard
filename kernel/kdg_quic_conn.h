@@ -29,6 +29,14 @@
 #define KDG_QC_CRYPTO_BUF	(KDG_T13_TXBUF * 2)
 #define KDG_QC_RX_RANGES	16	/* 记住的已收包号区间（生成 ACK 用） */
 #define KDG_QC_MTU		1200	/* 不做 PMTU 探测：1200 处处可达 */
+/*
+ * 接收缓冲。**必须比 MTU 大**：握手期服务器还未采纳我们声明的
+ * max_udp_payload=1200，它会按自己的初始值（常见 1350）发数据报；用 1200 的
+ * 缓冲去收，UDP 的 recv 会**静默截断**，解密随即失败并被丢掉 —— 表现是
+ * 「包都在收，握手就是不走」（2026-10-05 真机即此，宿主测试用 2048 缓冲
+ * 因此从未暴露）。
+ */
+#define KDG_QC_RX_MAX		1600
 
 enum kdg_qc_space { QS_INITIAL = 0, QS_HANDSHAKE, QS_APP, QS_COUNT };
 
@@ -111,6 +119,8 @@ struct kdg_qc_pnspace {
 struct kdg_qc {
 	enum kdg_qc_state state;
 	u64 err;			/* 关闭原因（传输错误码或 0x100+alert） */
+	u64 rx_undecryptable;		/* 解密失败的包数（多为被截断的数据报） */
+	u64 rx_ignored;			/* 因 DCID 不匹配、无密钥等原因丢弃的包数 */
 	bool err_app;			/* err 是应用层错误码（H3） */
 	bool peer_closed;
 

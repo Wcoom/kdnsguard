@@ -42,28 +42,33 @@ int main(void)
 	u8 body[16];
 	struct kdg_h3 *h = calloc(1, sizeof(*h));
 	struct kdg_h3_req r;
+	struct kdg_h3_parser ctl;
+	u8 *sbody = calloc(1, KDG_H3_BODY_MAX);
 
-	memset(body, 0xab, sizeof(body));
+#define REQ_RESET() do { kdg_h3_req_init(&r, 0); r.body = sbody; \
+			 r.body_cap = KDG_H3_BODY_MAX; } while (0)
+
+	memset(body, 0xab, 16);
 	body[0] = 0x12; body[1] = 0x34;
 	body[6] = 0; body[7] = 1;		/* ANCOUNT=1 */
 
 	/* 1. 一次喂完 */
-	memset(&r, 0, sizeof(r));
+	REQ_RESET();
 	{
 		size_t n = mk_resp(resp, body, sizeof(body));
 
-		CHECK(kdg_h3_feed(h, &r, resp, n, true) == 0);
+		CHECK(kdg_h3_feed(h, &r.fp, &r, resp, n, true) == 0);
 		CHECK(r.state == H3R_DONE && r.status == 200);
 		CHECK(r.body_len == sizeof(body) && r.body[0] == 0x12);
 	}
 
 	/* 2. 逐字节喂：跨 chunk 的帧必须能拼起来 */
-	memset(&r, 0, sizeof(r));
+	REQ_RESET();
 	{
 		size_t n = mk_resp(resp, body, sizeof(body)), i;
 
 		for (i = 0; i < n; i++) {
-			int rc = kdg_h3_feed(h, &r, resp + i, 1, i + 1 == n);
+			int rc = kdg_h3_feed(h, &r.fp, &r, resp + i, 1, i + 1 == n);
 
 			CHECK(rc == 0);
 		}
@@ -71,44 +76,44 @@ int main(void)
 	}
 
 	/* 3. DATA 先于 HEADERS */
-	memset(&r, 0, sizeof(r));
+	REQ_RESET();
 	{
 		u8 bad[4] = { H3F_DATA, 2, 0xaa, 0xbb };	/* 长度正好 4 */
 
-		CHECK(kdg_h3_feed(h, &r, bad, sizeof(bad), false) ==
+		CHECK(kdg_h3_feed(h, &r.fp, &r, bad, sizeof(bad), false) ==
 		      -H3E_FRAME_UNEXPECTED);
 	}
 
 	/* 4. 体超限：声明一个 100000 字节的 DATA 帧（> 64 KiB 上限） */
-	memset(&r, 0, sizeof(r));
+	REQ_RESET();
 	{
 		u8 big[5] = { H3F_HEADERS, 3, 0x00, 0x00, 0xc0 | 25 };
 		/* DATA + 4 字节 varint 长度 100000 */
 		u8 dh[5] = { H3F_DATA, 0x80, 0x01, 0x86, 0xa0 };
 
-		CHECK(kdg_h3_feed(h, &r, big, sizeof(big), false) == 0);
-		CHECK(kdg_h3_feed(h, &r, dh, sizeof(dh), false) == 0);
+		CHECK(kdg_h3_feed(h, &r.fp, &r, big, sizeof(big), false) == 0);
+		CHECK(kdg_h3_feed(h, &r.fp, &r, dh, sizeof(dh), false) == 0);
 		{
 			u8 chunk[512];
 			int rc = 0, i;
 
 			memset(chunk, 0, sizeof(chunk));
 			for (i = 0; i < 200 && !rc; i++)
-				rc = kdg_h3_feed(h, &r, chunk, sizeof(chunk), false);
+				rc = kdg_h3_feed(h, &r.fp, &r, chunk, sizeof(chunk), false);
 			CHECK(rc == -H3E_EXCESSIVE_LOAD);
 		}
 	}
 
 	/* 5. 帧头被截断就 FIN */
-	memset(&r, 0, sizeof(r));
+	REQ_RESET();
 	{
 		u8 part[3] = { H3F_HEADERS, 0x40 };	/* 长度 varint 只给一半 */
 
-		CHECK(kdg_h3_feed(h, &r, part, 2, true) == -H3E_FRAME_ERROR);
+		CHECK(kdg_h3_feed(h, &r.fp, &r, part, 2, true) == -H3E_FRAME_ERROR);
 	}
 
 	/* 6. 未知帧类型必须被忽略（RFC 9114 §9），随后正常帧仍要解析 */
-	memset(&r, 0, sizeof(r));
+	REQ_RESET();
 	{
 		size_t n = mk_resp(resp, body, sizeof(body));
 		u8 seq[300];
@@ -119,64 +124,63 @@ int main(void)
 		seq[o++] = 1; seq[o++] = 2; seq[o++] = 3;
 		memcpy(seq + o, resp, n);
 		o += n;
-		CHECK(kdg_h3_feed(h, &r, seq, o, true) == 0);
+		CHECK(kdg_h3_feed(h, &r.fp, &r, seq, o, true) == 0);
 		CHECK(r.state == H3R_DONE && r.status == 200);
 	}
 
 	/* 7. 控制流：SETTINGS 可接受，GOAWAY 解析出 stream id，DATA 必须拒 */
 	{
-		struct kdg_h3_req c;
-
-		memset(&c, 0, sizeof(c));
-		c.is_control = true;
+		memset(&ctl, 0, sizeof(ctl));
+		ctl.is_control = true;
 		{
 			/* 长度必须按实际数据长度传：多给的零字节会被解析成 DATA 帧 */
 			u8 st[4] = { H3F_SETTINGS, 2, 0x01, 0x00 };
 
-			CHECK(kdg_h3_feed(h, &c, st, sizeof(st), false) == 0);
+			CHECK(kdg_h3_feed(h, &ctl, NULL, st, sizeof(st), false) == 0);
 		}
 		{
 			u8 go[3] = { H3F_GOAWAY, 1, 0x04 };
 
-			CHECK(kdg_h3_feed(h, &c, go, sizeof(go), false) == 0);
+			CHECK(kdg_h3_feed(h, &ctl, NULL, go, sizeof(go), false) == 0);
 			CHECK(h->goaway_seen && h->goaway_id == 4);
 		}
 		{
 			u8 d[3] = { H3F_DATA, 1, 0x00 };
 
-			CHECK(kdg_h3_feed(h, &c, d, sizeof(d), false) ==
+			CHECK(kdg_h3_feed(h, &ctl, NULL, d, sizeof(d), false) ==
 			      -H3E_FRAME_UNEXPECTED);
 		}
 		/* 控制流不得 FIN */
-		memset(&c, 0, sizeof(c));
-		c.is_control = true;
-		CHECK(kdg_h3_feed(h, &c, NULL, 0, true) == -H3E_CLOSED_CRITICAL);
+		memset(&ctl, 0, sizeof(ctl));
+		ctl.is_control = true;
+		CHECK(kdg_h3_feed(h, &ctl, NULL, NULL, 0, true) == -H3E_CLOSED_CRITICAL);
 		/* 控制流上的推送帧必须拒 */
-		memset(&c, 0, sizeof(c));
-		c.is_control = true;
+		memset(&ctl, 0, sizeof(ctl));
+		ctl.is_control = true;
 		{
 			u8 pp[3] = { H3F_PUSH_PROMISE, 1, 0x00 };
 
-			CHECK(kdg_h3_feed(h, &c, pp, sizeof(pp), false) ==
+			CHECK(kdg_h3_feed(h, &ctl, NULL, pp, sizeof(pp), false) ==
 			      -H3E_FRAME_UNEXPECTED);
 		}
 	}
 
 	/* 8. 响应流上的 PUSH_PROMISE 必须拒（我们 MAX_PUSH_ID=0） */
-	memset(&r, 0, sizeof(r));
+	REQ_RESET();
 	{
 		u8 pp[5] = { H3F_HEADERS, 3, 0x00, 0x00, 0xc0 | 25 };
 
-		CHECK(kdg_h3_feed(h, &r, pp, sizeof(pp), false) == 0);
+		CHECK(kdg_h3_feed(h, &r.fp, &r, pp, sizeof(pp), false) == 0);
 		{
 			u8 push[3] = { H3F_PUSH_PROMISE, 1, 0x00 };
 
 			/* §7.2.5：MAX_PUSH_ID=0 时收到推送是 ID_ERROR，不是帧错误 */
-			CHECK(kdg_h3_feed(h, &r, push, sizeof(push), false) ==
+			CHECK(kdg_h3_feed(h, &r.fp, &r, push, sizeof(push), false) ==
 			      -H3E_ID_ERROR);
 		}
 	}
 
+	free(sbody);
 	free(h);
 	(void)buf;
 	printf("test_h3_frames: %s（失败 %d）\n", fails ? "FAIL" : "PASS", fails);

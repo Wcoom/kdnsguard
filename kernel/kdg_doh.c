@@ -51,6 +51,7 @@ void kdg_doh_default_cfg(struct kdg_doh_cfg *cfg)
 	cfg->ip_be = in_aton(KDG_BOOTSTRAP_IPV4);
 	cfg->port_be = htons(KDG_UPSTREAM_PORT);
 	cfg->deadline_ms = KDG_DEFAULT_DEADLINE_MS;
+	cfg->allow_h3 = READ_ONCE(kdg_allow_h3);
 }
 
 /* ── H1 兼容路径（方案 §6.4）─────────────────────────────────────────────

@@ -72,6 +72,15 @@ void kdg_tls_unlock(void);
  * 返回解析成功的证书张数（>0）或负 errno。 */
 int  kdg_tls_add_ca(const u8 *data, size_t len);
 
+/*
+ * QUIC 的 TLS 1.3 引擎（kdg_tls13.c）需要注入两个东西：随机数源与信任锚链。
+ * 这两样本来是本文件的私有静态对象，直接开放指针会把「谁拥有它」搞乱，
+ * 所以开成两个入口函数：随机数走同一个 CTR_DRBG（它自带锁），信任锚只读。
+ */
+struct mbedtls_x509_crt;
+int kdg_tls_rng_export(void *ctx, unsigned char *out, size_t len);
+const struct mbedtls_x509_crt *kdg_tls_ca_chain(void);
+
 /* 当前已加载的信任锚张数（0 表示未配置，此时任何握手都会因无法验证而失败）。 */
 unsigned int kdg_tls_ca_count(void);
 

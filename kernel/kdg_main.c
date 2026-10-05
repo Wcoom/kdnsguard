@@ -43,6 +43,9 @@ MODULE_PARM_DESC(allow_intercept,
 	"允许通过 Generic Netlink 启用 53 端口接管。默认 0 —— 骨架阶段还没有本地 DNS 监听者，启用会把手机 DNS 打断。仅用于开发验证。");
 
 bool kdg_debug;
+bool kdg_allow_h3 = true;
+module_param_named(h3, kdg_allow_h3, bool, 0644);
+MODULE_PARM_DESC(h3, "上游优先走 HTTP/3（QUIC），失败回落 HTTP/2");
 module_param_named(debug, kdg_debug, bool, 0644);
 MODULE_PARM_DESC(debug,
 	"为最早的若干次 NAT hook 调用打印 pf/协议/端口。默认 0。用于排查「hook 已挂但谓词不匹配」。");

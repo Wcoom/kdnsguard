@@ -960,15 +960,21 @@ static int qc_on_packet(struct kdg_qc *c, u8 *buf, size_t len, u64 now)
 	}
 	/* 收到的包其 DCID 必须等于本端 SCID，否则不是给我们的（§5.2 多路径） */
 	if (h.dcid_len != sizeof(c->scid) ||
-	    memcmp(buf + h.dcid_off, c->scid, h.dcid_len))
+	    memcmp(buf + h.dcid_off, c->scid, h.dcid_len)) {
+		c->rx_ignored++;
 		return 0;
-	if (!sp->rx.ready)
-		return 0;		/* 该级密钥还没有（乱序的 Handshake）：丢弃 */
+	}
+	if (!sp->rx.ready) {
+		c->rx_ignored++;	/* 该级密钥还没有（乱序的 Handshake） */
+		return 0;
+	}
 
 	pt_len = (size_t)kdg_quic_unprotect(&sp->rx, buf, h.pn_off, h.pkt_len,
 					    sp->largest_rx, &pn, &h.hdr_len);
-	if ((s64)pt_len < 0)
-		return 0;		/* 解不开：静默丢弃（可能是别人的包） */
+	if ((s64)pt_len < 0) {
+		c->rx_undecryptable++;	/* 含「数据报被接收缓冲截断」这一类 */
+		return 0;
+	}
 	/* 保留位必须为 0（§17.2/§17.3.1） */
 	if (h.long_form && (buf[0] & 0x0c))
 		return -(int)QE_PROTOCOL_VIOLATION;
@@ -1223,6 +1229,11 @@ static int qc_build_packet(struct kdg_qc *c, enum kdg_qc_space s, u8 *out,
 
 	if (!sp->tx.ready || cap < 400)
 		return 0;
+	/* 一个包的总长不得超过 1200（§14.1：不知道路径 MTU 时就按最小 1200 发）。
+	 * 调用方给的缓冲可能更大（接收缓冲就是 1600），这里必须自己收口，
+	 * 否则会发出比自己申报的 max_udp_payload 还大的数据报。 */
+	if (cap > KDG_QC_MTU)
+		cap = KDG_QC_MTU;
 	if (s != QS_APP)
 		hdr_len = 1 + 4 + 1 + c->dcid_len + 1 + sizeof(c->scid) + 2 +
 			  (s == QS_INITIAL ? (size_t)(c->token_len ? c->token_len + 2 : 1) : 0) + 4;
