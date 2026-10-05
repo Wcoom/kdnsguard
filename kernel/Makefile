@@ -17,6 +17,7 @@ kdnsguard-y += kdg_listener.o
 kdnsguard-y += kdg_nat.o
 kdnsguard-y += kdg_edns.o
 kdnsguard-y += kdg_quic_crypto.o
+kdnsguard-y += kdg_tls13.o
 kdnsguard-y += kdg_genl.o
 kdnsguard-y += kdg_mbedtls.o
 kdnsguard-y += kdg_divti3.o
