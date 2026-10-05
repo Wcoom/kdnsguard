@@ -19,6 +19,7 @@
 #include <net/net_namespace.h>
 
 #include "kdg.h"
+#include "kdg_bpfpub.h"
 #include "kdg_tls.h"
 #include "kdg_doh.h"
 #include "kdg_cache_tab.h"
@@ -43,6 +44,7 @@ static int kdg_genl_set_intercept(bool enable);
 static int kdg_genl_enable(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_disable(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_set_trust(struct sk_buff *skb, struct genl_info *info);
+static int kdg_genl_set_bpf_map(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_prepare(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_commit(struct sk_buff *skb, struct genl_info *info);
 static int kdg_genl_set_network(struct sk_buff *skb, struct genl_info *info);
@@ -107,6 +109,13 @@ static const struct genl_ops kdg_genl_ops[] = {
 				  GENL_DONT_VALIDATE_DUMP,
 	},
 	{
+		.cmd		= KDG_CMD_SET_BPF_MAP,
+		.doit		= kdg_genl_set_bpf_map,
+		.flags		= GENL_ADMIN_PERM,
+		.validate	= GENL_DONT_VALIDATE_STRICT |
+				  GENL_DONT_VALIDATE_DUMP,
+	},
+	{
 		.cmd		= KDG_CMD_DISABLE_INTERCEPT,
 		.doit		= kdg_genl_disable,
 		.flags		= GENL_ADMIN_PERM,
@@ -143,6 +152,49 @@ static struct genl_family kdg_genl_family = {
 	.resv_start_op	= __KDG_CMD_MAX,
 	.policy		= kdg_genl_policy,
 };
+
+/*
+ * 挂接/解绑「内核解析结果 → BPF 哈希表」的发布目标。
+ *
+ * 注意这个 handler 必须在**调用者上下文**里跑（genl doit 就是），因为
+ * bpf_map_get() 按当前进程的 fd 表解析 fd。放到池线程去做会拿到别人的 fd 表。
+ */
+static int kdg_genl_set_bpf_map(struct sk_buff *skb, struct genl_info *info)
+{
+	struct sk_buff *msg;
+	void *hdr;
+	int fd, ret;
+
+	if (!info->attrs[KDG_A_BPF_MAP_FD])
+		return -EINVAL;
+	fd = (int)nla_get_s32(info->attrs[KDG_A_BPF_MAP_FD]);
+
+	ret = kdg_bpfpub_attach(fd);
+	if (ret) {
+		pr_warn("BPF 发布表挂接失败: %d\n", ret);
+		return ret;
+	}
+
+	msg = nlmsg_new(64, GFP_KERNEL);
+	if (!msg)
+		return -ENOMEM;
+	hdr = genlmsg_put_reply(msg, info, &kdg_genl_family, 0,
+				KDG_CMD_SET_BPF_MAP);
+	if (!hdr) {
+		nlmsg_free(msg);
+		return -EMSGSIZE;
+	}
+	if (nla_put_u32(msg, KDG_A_BPF_KEY_SIZE, kdg_bpfpub_key_size()) ||
+	    nla_put_u32(msg, KDG_A_BPF_VALUE_SIZE, kdg_bpfpub_val_size()) ||
+	    nla_put_u64_64bit(msg, KDG_A_BPF_PUBLISHED, kdg_bpfpub_published(),
+			      KDG_A_UNSPEC)) {
+		nlmsg_free(msg);
+		return -EMSGSIZE;
+	}
+	genlmsg_end(msg, hdr);
+	return genlmsg_reply(msg, info);
+}
+
 
 static int kdg_genl_caps(struct sk_buff *skb, struct genl_info *info)
 {

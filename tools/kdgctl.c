@@ -155,6 +155,21 @@ static void putnum(u64 v)
 	puts_(&buf[i]);
 }
 
+/* 64 位版本：puthex 只打 8 个 nibble（历史用法是按 u32 调的）。 */
+static void puthex64(u64 v)
+{
+	static const char hx[] = "0123456789abcdef";
+	char buf[20];
+	int i;
+
+	buf[0] = '0';
+	buf[1] = 'x';
+	for (i = 0; i < 16; i++)
+		buf[2 + i] = hx[(v >> ((15 - i) * 4)) & 0xf];
+	buf[18] = '\0';
+	puts_(buf);
+}
+
 static void puthex(u64 v)
 {
 	static const char hx[] = "0123456789abcdef";
@@ -531,6 +546,7 @@ static long sys4(long n, long a, long b, long c, long d)
 	return x0;
 }
 
+
 /*
  * ⚠️ 入口必须是 naked。
  *
@@ -781,6 +797,229 @@ static int genl_send_attrs(u16 fam, u8 cmd, const struct kdg_attr_ref *attrs,
 			  ? *(int *)(rxbuf + sizeof(*rn)) : 0;
 		return err;
 	}
+}
+
+/* ── BPF 发布表：建表 / 挂接 / 回读 ──────────────────────────────────────
+ *
+ * 为什么这条验证路径放在 kdgctl 而不是等 mihomo：内核把「域名哈希 + TTL」
+ * 发布进用户空间的 BPF 表，涉及三段（建表 / 挂接 / 回读）。放在一个不依赖
+ * 任何第三方库的小工具里，一旦不通就能立刻分清是内核侧还是客户端侧。
+ *
+ * 表结构必须与内核里的 kdg_bpf_key / kdg_bpf_val 逐字节一致 —— 大小不符时
+ * 挂接会被内核拒绝（而不是「尽力而为」写进一张错位的表）。
+ */
+#define SYS_bpf_		280	/* arm64 */
+#define SYS_nanosleep_		101
+
+#define BPF_MAP_CREATE_		0
+#define BPF_MAP_LOOKUP_ELEM_	1
+#define BPF_MAP_UPDATE_ELEM_	2
+#define BPF_MAP_GET_NEXT_KEY_	4
+#define BPF_MAP_TYPE_LRU_HASH_	9
+
+struct bpf_attr_map_create {
+	u32 map_type;
+	u32 key_size;
+	u32 value_size;
+	u32 max_entries;
+	u32 map_flags;
+	u32 inner_map_fd;
+	u32 numa_node;
+	char map_name[16];
+	u32 map_ifindex;
+	u32 btf_fd;
+	u32 btf_key_type_id;
+	u32 btf_value_type_id;
+	u32 btf_vmlinux_value_type_id;
+	u64 map_extra;
+};
+
+struct bpf_attr_elem {
+	u32 map_fd;
+	u32 pad0;
+	u64 key;
+	u64 value;
+	u64 flags;
+};
+
+struct bpf_attr_next {
+	u32 map_fd;
+	u32 pad0;
+	u64 key;
+	u64 next_key;
+};
+
+struct kdg_bpf_key_ {
+	u32 family;
+	u8  addr[16];
+} __attribute__((packed));
+
+struct kdg_bpf_val_ {
+	u64 domain_hash;
+	u32 ttl_ms;
+	u32 flags;
+} __attribute__((packed));
+
+static void msleep_(u64 ms)
+{
+	struct { u64 s; u64 ns; } ts;
+
+	ts.s = ms / 1000;
+	ts.ns = (ms % 1000) * 1000000;
+	sys3(SYS_nanosleep_, (long)&ts, 0, 0);
+}
+
+static int bpf_map_create_(u32 ksz, u32 vsz, u32 entries)
+{
+	struct bpf_attr_map_create a;
+
+	memset(&a, 0, sizeof(a));
+	a.map_type = BPF_MAP_TYPE_LRU_HASH_;
+	a.key_size = ksz;
+	a.value_size = vsz;
+	a.max_entries = entries;
+	return (int)sys3(SYS_bpf_, BPF_MAP_CREATE_, (long)&a, sizeof(a));
+}
+
+static int bpf_lookup_(int fd, const void *key, void *val)
+{
+	struct bpf_attr_elem a;
+
+	memset(&a, 0, sizeof(a));
+	a.map_fd = (u32)fd;
+	a.key = (u64)(usize)key;
+	a.value = (u64)(usize)val;
+	return (int)sys3(SYS_bpf_, BPF_MAP_LOOKUP_ELEM_, (long)&a, sizeof(a));
+}
+
+static int bpf_update_(int fd, const void *key, const void *val)
+{
+	struct bpf_attr_elem a;
+
+	memset(&a, 0, sizeof(a));
+	a.map_fd = (u32)fd;
+	a.key = (u64)(usize)key;
+	a.value = (u64)(usize)val;
+	return (int)sys3(SYS_bpf_, BPF_MAP_UPDATE_ELEM_, (long)&a, sizeof(a));
+}
+
+static int bpf_next_key_(int fd, const void *key, void *next)
+{
+	struct bpf_attr_next a;
+
+	memset(&a, 0, sizeof(a));
+	a.map_fd = (u32)fd;
+	a.key = (u64)(usize)key;
+	a.next_key = (u64)(usize)next;
+	return (int)sys3(SYS_bpf_, BPF_MAP_GET_NEXT_KEY_, (long)&a, sizeof(a));
+}
+
+static void dump_bpf_entry(int fd, const struct kdg_bpf_key_ *k)
+{
+	struct kdg_bpf_val_ v;
+	u32 n = k->family == 2 ? 4u : 16u;
+	u32 i;
+
+	if (bpf_lookup_(fd, k, &v)) {
+		puts_("  <查不到>\n");
+		return;
+	}
+	puts_(k->family == 2 ? "  v4 " : "  v6 ");
+	for (i = 0; i < n; i++) {
+		putnum(k->addr[i]);
+		if (i + 1 < n)
+			puts_(".");
+	}
+	puts_("  hash=");
+	puthex64(v.domain_hash);
+	puts_("  ttl_ms=");
+	putnum(v.ttl_ms);
+	puts_("  flags=");
+	putnum(v.flags);
+	puts_("\n");
+}
+
+/* 一次做完：建表 → 挂接 → 等待 → 回读。等待期间由外部脚本发起解析。 */
+static int cmd_bpftest(u16 fam, int seconds)
+{
+	struct kdg_bpf_key_ key, nk;
+	int fd, ret, i, total = 0;
+
+	fd = bpf_map_create_(sizeof(struct kdg_bpf_key_),
+			     sizeof(struct kdg_bpf_val_), 4096);
+	if (fd < 0) {
+		puts_("建表失败（bpf syscall 返回 ");
+		putnum((u64)(-fd));
+		puts_("）：内核是否开了 CONFIG_BPF_SYSCALL？\n");
+		return 1;
+	}
+	puts_("已建表 fd=");
+	putnum((u64)fd);
+	puts_("（key ");
+	putnum(sizeof(struct kdg_bpf_key_));
+	puts_(" B / value ");
+	putnum(sizeof(struct kdg_bpf_val_));
+	puts_(" B）\n");
+
+	{
+		s32 fdattr = (s32)fd;
+		struct kdg_attr_ref attrs[1];
+
+		attrs[0].type = KDG_A_BPF_MAP_FD;
+		attrs[0].data = &fdattr;
+		attrs[0].len = sizeof(fdattr);
+		ret = genl_send_attrs(fam, KDG_CMD_SET_BPF_MAP, attrs, 1);
+		if (ret) {
+			puts_("挂接失败（errno ");
+			putnum((u64)(-ret));
+			puts_("）\n");
+			return 1;
+		}
+	}
+	/* 自检：先自己写一条已知记录再读回。**这一步不能省** —— 没有它，表为空
+	 * 时分不清是「内核没发布」还是「本工具的 bpf 系统调用封装有错」。 */
+	{
+		struct kdg_bpf_key_ tk;
+		struct kdg_bpf_val_ tv;
+		int rc;
+
+		memset(&tk, 0, sizeof(tk));
+		tk.family = 2;
+		tk.addr[0] = 1; tk.addr[1] = 2; tk.addr[2] = 3; tk.addr[3] = 4;
+		tv.domain_hash = 0xdeadbeefcafeULL;
+		tv.ttl_ms = 1234;
+		tv.flags = 0x5a;
+		rc = bpf_update_(fd, &tk, &tv);
+		puts_("自检写入返回 ");
+		putnum((u64)(rc < 0 ? -rc : 0));
+		puts_(rc ? "（失败）\n" : "\n");
+		dump_bpf_entry(fd, &tk);
+	}
+
+	puts_("已挂接，等待解析结果");
+
+	if (seconds <= 0)
+		seconds = 10;
+	for (i = 0; i < seconds; i++) {
+		msleep_(1000);
+		puts_(".");
+	}
+	puts_("\n");
+
+	memset(&key, 0, sizeof(key));
+	ret = bpf_next_key_(fd, 0, &key);
+	while (ret == 0 && total < 64) {
+		dump_bpf_entry(fd, &key);
+		total++;
+		memset(&nk, 0, sizeof(nk));
+		if (bpf_next_key_(fd, &key, &nk))
+			break;
+		key = nk;
+	}
+	puts_("表内共 ");
+	putnum((u64)total);
+	puts_(" 条（最多打印 64 条）\n");
+	return total > 0 ? 0 : 1;
 }
 
 /* 从 GET_HEALTH 回包里取 generation（顶层 KDG_A_GENERATION，u32）。 */
@@ -1337,6 +1576,18 @@ void kdg_entry(long *sp)
 	}
 	if (argc >= 2 && str_eq(argv[1], "disable")) {
 		sys3(SYS_exit, cmd_disable(fam), 0, 0);
+	}
+	if (argc >= 2 && str_eq(argv[1], "bpftest")) {
+		int secs = 10;
+
+		if (argc >= 3) {
+			int k = 0;
+
+			secs = 0;
+			while (argv[2][k] >= '0' && argv[2][k] <= '9')
+				secs = secs * 10 + (argv[2][k++] - '0');
+		}
+		sys3(SYS_exit, cmd_bpftest(fam, secs), 0, 0);
 	}
 	if (argc >= 2 && str_eq(argv[1], "maplookup")) {
 		if (argc < 3) {

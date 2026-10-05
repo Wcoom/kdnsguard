@@ -58,6 +58,11 @@ enum kdg_genl_cmd {
 	 * 方案 §6.2「CA/证书验证材料通过受保护的初始化接口加载进内核」。
 	 * 追加语义 —— 可以分批喂入根证书与中间证书。 */
 	KDG_CMD_SET_TRUST,
+	/* 追加于尾部。挂接/解绑「内核解析结果 → BPF 哈希表」的发布目标：
+	 * 用户空间建表并把 **fd** 交过来（本内核 6.6 没有内核内建图创建接口），
+	 * 内核每次解析出地址就写进去，eBPF 侧据此在包路径上按哈希匹配域名。
+	 * fd = -1 表示解绑。 */
+	KDG_CMD_SET_BPF_MAP,
 	__KDG_CMD_MAX,
 };
 #define KDG_CMD_MAX (__KDG_CMD_MAX - 1)
@@ -88,6 +93,11 @@ enum kdg_genl_attr {
 	/* P3 ownership transaction attributes, appended for ABI compatibility. */
 	KDG_A_TRANSACTION_STATE,	/* u32: enum kdg_ownership */
 	KDG_A_UPSTREAM_OK,		/* u8 */
+	/* 追加于尾部。SET_BPF_MAP 的输入/输出。 */
+	KDG_A_BPF_MAP_FD,		/* s32 —— 输入：调用者的表 fd，-1 解绑 */
+	KDG_A_BPF_KEY_SIZE,		/* u32 —— 输出：内核期望的 key 大小 */
+	KDG_A_BPF_VALUE_SIZE,		/* u32 —— 输出：内核期望的 value 大小 */
+	KDG_A_BPF_PUBLISHED,		/* u64 —— 输出：累计发布条数 */
 	__KDG_A_MAX,
 };
 #define KDG_A_MAX (__KDG_A_MAX - 1)

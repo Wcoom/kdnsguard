@@ -23,6 +23,7 @@
 #endif
 
 #include "kdg_map.h"
+#include "kdg_bpfpub.h"
 
 /* 哈希桶数取 2 的幂。1024 桶 / 512 槽 => 平均链长 0.5。 */
 #define KDG_MAP_HASH_BITS	10
@@ -364,6 +365,33 @@ void kdg_map_record(u32 net_id, u32 profile_gen,
 		kdg_map_entry_recompute(e, now);
 	}
 	spin_unlock(&m->lock);
+
+	/*
+	 * 发布到 BPF 表（若用户空间挂接过一张）。
+	 *
+	 * ⚠️ 必须放在 spin_unlock **之后**：map_update_elem 对哈希表可能要分配
+	 * 元素，在自旋锁里做这件事是「原子上下文里睡眠」，会立刻炸出来。
+	 * 两次遍历 ans[] 的代价可以忽略（一次应答几条到几十条地址）。
+	 * 发布是旁路：失败只丢计数，绝不影响上面的记账，更不影响 DNS 应答。
+	 */
+	if (kdg_bpfpub_active() && nans) {
+		u64 h = kdg_bpf_domain_hash(qname, qname_len);
+		u16 i;
+
+		for (i = 0; i < nans; i++) {
+			size_t off = ans[i].rdata_off;
+
+			if (ans[i].rdlen != 4 && ans[i].rdlen != 16)
+				continue;
+			if (off + ans[i].rdlen > msglen)
+				continue;
+			kdg_bpfpub_publish(ans[i].rdlen == 4 ? KDG_BPF_AF_INET :
+					   KDG_BPF_AF_INET6,
+					   msg + off, ans[i].rdlen, h,
+					   kdg_map_ttl_ms(ans[i].ttl),
+					   KDG_BPF_F_UPSTREAM);
+		}
+	}
 }
 
 int kdg_map_lookup(u32 net_id, u32 profile_gen,

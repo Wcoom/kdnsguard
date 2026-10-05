@@ -15,6 +15,7 @@ obj-m += kdnsguard.o
 kdnsguard-y := kdg_main.o
 kdnsguard-y += kdg_listener.o
 kdnsguard-y += kdg_nat.o
+kdnsguard-y += kdg_bpfpub.o
 kdnsguard-y += kdg_edns.o
 kdnsguard-y += kdg_quic_crypto.o
 kdnsguard-y += kdg_tls13.o

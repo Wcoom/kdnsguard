@@ -22,13 +22,14 @@ CACHE_TAB := $(BUILD)/test_cache_tab
 MAP     := $(BUILD)/test_map
 POOL    := $(BUILD)/test_pool
 QFRAME  := $(BUILD)/test_quic_frame
+BPFPUB  := $(BUILD)/test_bpfpub
 WIRE_SRC  := test_wire.c  ../kernel/kdg_wire.c
 HTTP_SRC  := test_http.c  ../kernel/kdg_http.c
 CACHE_SRC := test_cache.c ../kernel/kdg_cache.c ../kernel/kdg_wire.c
 
 .PHONY: all run clean
 
-all: $(WIRE) $(HTTP) $(CACHE) $(CACHE_TAB) $(MAP) $(POOL) $(QFRAME)
+all: $(WIRE) $(HTTP) $(CACHE) $(CACHE_TAB) $(MAP) $(POOL) $(QFRAME) $(BPFPUB)
 
 $(WIRE): $(WIRE_SRC) ../kernel/kdg_wire.h ../include/kdg_base.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(WIRE_SRC)
@@ -42,8 +43,8 @@ $(CACHE): $(CACHE_SRC) ../kernel/kdg_cache.h ../kernel/kdg_wire.h | $(BUILD)
 $(CACHE_TAB): test_cache_tab.c host_kernel.h ../kernel/kdg_cache_tab.c ../kernel/kdg_cache_tab.h ../kernel/kdg_cache.c ../kernel/kdg_wire.c | $(BUILD)
 	$(CC) $(CFLAGS) -pthread -I. -DKDG_HOST_TEST -o $@ test_cache_tab.c ../kernel/kdg_cache.c ../kernel/kdg_wire.c
 
-$(MAP): test_map.c host_kernel.h ../kernel/kdg_map.c ../kernel/kdg_map.h ../kernel/kdg_wire.c ../kernel/kdg_wire.h | $(BUILD)
-	$(CC) $(CFLAGS) -pthread -I. -DKDG_HOST_TEST -o $@ test_map.c ../kernel/kdg_wire.c
+$(MAP): test_map.c host_kernel.h ../kernel/kdg_map.c ../kernel/kdg_map.h ../kernel/kdg_wire.c ../kernel/kdg_wire.h ../kernel/kdg_bpfpub.c | $(BUILD)
+	$(CC) $(CFLAGS) -pthread -I. -DKDG_HOST_TEST -o $@ test_map.c ../kernel/kdg_wire.c ../kernel/kdg_bpfpub.c
 
 # ── 连接池并发测试 ──────────────────────────────────────────────────────
 # 这一个目标**不用** tests/include 的 linux/types.h，改用 tests/hostlinux/：
@@ -68,6 +69,9 @@ $(POOL): test_pool.c hostlinux/hostshim.c hostlinux/hostshim.h \
 $(QFRAME): test_quic_frame.c ../kernel/kdg_quic_frame.c ../kernel/kdg_quic_frame.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ test_quic_frame.c ../kernel/kdg_quic_frame.c
 
+$(BPFPUB): test_bpfpub.c ../kernel/kdg_bpfpub.c ../kernel/kdg_bpfpub.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_bpfpub.c ../kernel/kdg_bpfpub.c
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
@@ -79,6 +83,7 @@ run: all
 	@./$(MAP)
 	@./$(POOL)
 	@./$(QFRAME)
+	@./$(BPFPUB)
 
 clean:
 	rm -rf $(BUILD)
