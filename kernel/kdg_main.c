@@ -359,13 +359,20 @@ static void __exit kdg_exit(void)
  *      本工作只跳过这一次；对方释放后下一拍自然接管。因此它与既有的
  *      脚本/代理路径**可以共存**，不会互相打架。
  */
-#ifdef CONFIG_KDNSGUARD_EMBED_CA
+/*
+ * 内建形态由 Kconfig 打开这两项；树外模块形态由构建脚本用 KDG_EMBED_CA /
+ * KDG_AUTO_START 打开 —— 两种形态都要能"开机不依赖用户空间脚本"：
+ * 信任锚自带、接管自己做。定义名不同只是为了让 Kconfig 与 Makefile 各自
+ * 表达得清楚，行为完全一致。
+ */
+#if defined(CONFIG_KDNSGUARD_EMBED_CA) || defined(KDG_EMBED_CA)
+#define KDG_HAVE_EMBED_CA 1
 #include "kdg_root_ca.h"
 #endif
 
 /* 默认值随 Kconfig：内建时开机自启，树外模块形态默认关（开发时由 insmod
  * 的 allow_intercept 显式控制）。 */
-#if defined(CONFIG_KDNSGUARD_AUTO_START)
+#if defined(CONFIG_KDNSGUARD_AUTO_START) || defined(KDG_AUTO_START)
 static bool kdg_auto_start = true;
 #else
 static bool kdg_auto_start;
@@ -425,7 +432,7 @@ int kdg_autostart_init(void)
 {
 	INIT_DELAYED_WORK(&kdg_autostart_dw, kdg_autostart_work);
 
-#ifdef CONFIG_KDNSGUARD_EMBED_CA
+#ifdef KDG_HAVE_EMBED_CA
 	{
 		int added = kdg_tls_add_ca(kdg_root_ca, KDG_ROOT_CA_LEN);
 

@@ -82,6 +82,11 @@ ccflags-y += -I$(KDG_THIRD)/mbedtls/include
 ccflags-y += -I$(KDG_THIRD)/nghttp2/includes
 ccflags-y += -DMBEDTLS_CONFIG_FILE='"kdnsguard_mbedtls_config.h"'
 
+# 树外模块形态也要"开机不依赖用户空间脚本"：信任锚自带（编进 .ko）、接管自己
+# 做（auto_start 默认开）。用单独的宏而不是 CONFIG_*，是为了让 Kconfig 与
+# Makefile 各自表达清楚同一件事；kdg_main.c 里两者等价。
+ccflags-y += -DKDG_EMBED_CA -DKDG_AUTO_START
+
 # 刻意**不加** -Wall -Wextra：内核头自身（如 include/linux/kcsan-checks.h 的
 # static inline 空实现）在 -Wextra 下会大量报 unused-parameter，内核树本身
 # 也从不开这个档；而 mbedTLS 作为第三方代码也不按内核的告警等级维护。

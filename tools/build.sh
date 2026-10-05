@@ -76,7 +76,7 @@ make LLVM=1 \
      HOSTLD=ld.lld \
      O=out \
      CONFIG_MODULE_SIG_ALL= \
-     KCFLAGS+="-O2 -mcpu=oryon-1 -Wno-error -pipe" \
+     KCFLAGS+="-O2 -mcpu=oryon-1 -Wno-error -pipe -DKDG_EMBED_CA -DKDG_AUTO_START" \
      M="$KO_DIR" \
      modules 2>&1 | tee "$LOG"
 

@@ -26,3 +26,4 @@ kernel/nghttp2/
 clients/rust/target/
 tools/chrneg
 tools/kdgwatchd
+dist/

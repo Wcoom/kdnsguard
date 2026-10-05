@@ -1,0 +1,6 @@
+id=kdnsguard
+name=内核态 DNS（kdnsguard）
+version=0.2.0
+versionCode=20
+author=Wcoom
+description=开机由内核模块接管全局 DNS：内建信任锚、自己完成所有权事务、无用户空间脚本参与。失败自动回落原链路，引导异常时自我停用。
