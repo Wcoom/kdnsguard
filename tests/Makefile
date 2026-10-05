@@ -21,13 +21,14 @@ CACHE   := $(BUILD)/test_cache
 CACHE_TAB := $(BUILD)/test_cache_tab
 MAP     := $(BUILD)/test_map
 POOL    := $(BUILD)/test_pool
+QFRAME  := $(BUILD)/test_quic_frame
 WIRE_SRC  := test_wire.c  ../kernel/kdg_wire.c
 HTTP_SRC  := test_http.c  ../kernel/kdg_http.c
 CACHE_SRC := test_cache.c ../kernel/kdg_cache.c ../kernel/kdg_wire.c
 
 .PHONY: all run clean
 
-all: $(WIRE) $(HTTP) $(CACHE) $(CACHE_TAB) $(MAP) $(POOL)
+all: $(WIRE) $(HTTP) $(CACHE) $(CACHE_TAB) $(MAP) $(POOL) $(QFRAME)
 
 $(WIRE): $(WIRE_SRC) ../kernel/kdg_wire.h ../include/kdg_base.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $(WIRE_SRC)
@@ -64,6 +65,9 @@ $(POOL): test_pool.c hostlinux/hostshim.c hostlinux/hostshim.h \
 	 ../kernel/kdg_doh.h ../kernel/kdg.h | $(BUILD)
 	$(CC) $(POOL_CFLAGS) -o $@ test_pool.c hostlinux/hostshim.c ../kernel/kdg_pool.c
 
+$(QFRAME): test_quic_frame.c ../kernel/kdg_quic_frame.c ../kernel/kdg_quic_frame.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ test_quic_frame.c ../kernel/kdg_quic_frame.c
+
 $(BUILD):
 	mkdir -p $(BUILD)
 
@@ -74,6 +78,7 @@ run: all
 	@./$(CACHE_TAB)
 	@./$(MAP)
 	@./$(POOL)
+	@./$(QFRAME)
 
 clean:
 	rm -rf $(BUILD)
